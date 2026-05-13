@@ -2,7 +2,6 @@ import threading
 import signal
 import sys
 
-# Unbuffered stdout
 sys.stdout.reconfigure(line_buffering=True)
 
 from audio import AudioCapture
@@ -43,7 +42,7 @@ def main():
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
         feed_thread.start()
-        output.show_status("[recording] Speak now... (double-tap Fn to stop)\n")
+        print("[recording] Speak now... (press Enter to stop)")
 
     def on_deactivate():
         nonlocal recording, feed_thread
@@ -57,36 +56,30 @@ def main():
         for chunk in audio.drain():
             stt.feed_audio(chunk)
         stt.finalize()
-        output.show_status("[ready] Double-tap Fn to record\n")
+        print("[ready] Press Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
-    def signal_handler(sig, frame):
-        print("\n[exit] Shutting down...")
-        hotkey.stop()
-        if recording:
-            audio.stop()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-
     print("=== VoiceInput ===")
-    print(f"STT: {config.stt_provider} | Model: {config.whisper_model}")
+    print(f"STT: whisper local | Model: {config.whisper_model}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
-    print("Press Ctrl+Option+1 to toggle recording.")
-    print("Press Ctrl+C to exit.\n")
+    print()
 
-    # Pre-load whisper model in background
-    threading.Thread(target=stt._ensure_model, daemon=True).start()
+    # Load model first (blocking), so user knows when ready
+    print("[stt] Loading model...", end=" ", flush=True)
+    stt._ensure_model()
+    print("done.")
+    print()
+    print("Press Enter to start recording, Enter again to stop.")
+    print("Press Ctrl+C to exit.")
+    print()
 
-    # Start hotkey listener (runs NSRunLoop on its thread)
+    signal.signal(signal.SIGINT, lambda *_: (print("\n[exit]"), sys.exit(0)))
+
     hotkey.start()
 
     # Keep main thread alive
-    try:
-        signal.pause()
-    except AttributeError:
-        threading.Event().wait()
+    threading.Event().wait()
 
 
 if __name__ == "__main__":
