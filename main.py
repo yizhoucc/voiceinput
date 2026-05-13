@@ -2,6 +2,9 @@ import threading
 import signal
 import sys
 
+# Unbuffered stdout
+sys.stdout.reconfigure(line_buffering=True)
+
 from audio import AudioCapture
 from stt.whisper_local import WhisperLocalSTT
 from output.terminal import TerminalOutput
@@ -40,7 +43,7 @@ def main():
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
         feed_thread.start()
-        output.show_status("[recording] Speak now... (release Option to stop)")
+        output.show_status("[recording] Speak now... (double-tap Fn to stop)\n")
 
     def on_deactivate():
         nonlocal recording, feed_thread
@@ -54,7 +57,7 @@ def main():
         for chunk in audio.drain():
             stt.feed_audio(chunk)
         stt.finalize()
-        output.show_status("[ready] Press Option+Space to record\n")
+        output.show_status("[ready] Double-tap Fn to record\n")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
@@ -70,19 +73,20 @@ def main():
     print("=== VoiceInput ===")
     print(f"STT: {config.stt_provider} | Model: {config.whisper_model}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
-    print("Press Option+Space to start recording, release to stop.")
+    print("Double-tap Fn to toggle recording.")
     print("Press Ctrl+C to exit.\n")
 
-    hotkey.start()
-
-    # Pre-load model in background
+    # Pre-load whisper model in background
     threading.Thread(target=stt._ensure_model, daemon=True).start()
 
+    # Start hotkey listener (runs NSRunLoop on its thread)
+    hotkey.start()
+
+    # Keep main thread alive
     try:
         signal.pause()
     except AttributeError:
-        # Windows fallback
-        stop_event.wait()
+        threading.Event().wait()
 
 
 if __name__ == "__main__":
