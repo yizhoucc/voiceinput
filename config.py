@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class Config:
     # STT
     stt_provider: str = "whisper_local"  # whisper_local | apple_speech | whisper_remote
-    whisper_model: str = "base"  # use small model for real-time on CPU; large-v3-turbo needs GPU
+    whisper_model: str = "small"  # base=fast but bad Chinese, small=good balance, large-v3-turbo needs GPU
     primary_language: str = "zh"  # "zh" for Chinese-primary with English mixed
     stt_step_ms: int = 2000  # sliding window step in ms
 
