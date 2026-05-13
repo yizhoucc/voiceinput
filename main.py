@@ -73,7 +73,7 @@ def main():
     print("=== VoiceInput ===")
     print(f"STT: {config.stt_provider} | Model: {config.whisper_model}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
-    print("Double-tap Fn to toggle recording.")
+    print("Press Ctrl+Option+1 to toggle recording.")
     print("Press Ctrl+C to exit.\n")
 
     # Pre-load whisper model in background
