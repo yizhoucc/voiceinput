@@ -116,7 +116,7 @@ class WhisperLocalSTT(STTProvider):
 
             # Check if there's a competing segment we already added that overlaps
             # If the last added segment overlaps significantly, compare and maybe replace
-            if result and result[-1][1] > seg_start + 0.1:
+            if result and result[-1][2] > seg_start + 0.1:
                 prev_lang, prev_text, prev_end, prev_conf = result[-1]
                 prev_overlap = prev_end - seg_start
                 if prev_overlap > 0.3:  # significant overlap
