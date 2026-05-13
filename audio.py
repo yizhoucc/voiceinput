@@ -1,4 +1,3 @@
-import threading
 import queue
 import numpy as np
 import sounddevice as sd
@@ -10,14 +9,18 @@ class AudioCapture:
         self.queue: queue.Queue[np.ndarray] = queue.Queue()
         self.is_recording = False
         self._stream: sd.InputStream | None = None
+        self._raw_chunks: list[np.ndarray] = []
 
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status):
         if status:
             print(f"[audio] {status}")
         if self.is_recording:
-            self.queue.put(indata.copy())
+            copy = indata.copy()
+            self.queue.put(copy)
+            self._raw_chunks.append(copy)
 
     def start(self):
+        self._raw_chunks.clear()
         self.is_recording = True
         self._stream = sd.InputStream(
             samplerate=config.sample_rate,
@@ -34,6 +37,12 @@ class AudioCapture:
             self._stream.stop()
             self._stream.close()
             self._stream = None
+
+    def get_raw_audio(self) -> np.ndarray | None:
+        """Return the full raw audio from the last recording session."""
+        if not self._raw_chunks:
+            return None
+        return np.concatenate(self._raw_chunks)
 
     def get_audio(self, timeout: float = 0.5) -> np.ndarray | None:
         try:

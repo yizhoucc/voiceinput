@@ -1,14 +1,21 @@
 import threading
 import signal
 import sys
+import wave
+from datetime import datetime
+from pathlib import Path
 
 sys.stdout.reconfigure(line_buffering=True)
 
+import numpy as np
 from audio import AudioCapture
 from stt.whisper_local import WhisperLocalSTT
 from output.terminal import TerminalOutput
 from hotkey import HotkeyListener
 from config import config
+
+AUDIO_DIR = Path("recordings")
+AUDIO_DIR.mkdir(exist_ok=True)
 
 
 def main():
@@ -44,6 +51,17 @@ def main():
         feed_thread.start()
         print("[recording] Speak now... (press Enter to stop)")
 
+    def save_wav(raw_audio: np.ndarray) -> Path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = AUDIO_DIR / f"{ts}.wav"
+        with wave.open(str(path), "wb") as wf:
+            wf.setnchannels(config.channels)
+            wf.setsampwidth(2)  # 16-bit
+            wf.setframerate(config.sample_rate)
+            pcm = (raw_audio * 32767).clip(-32768, 32767).astype(np.int16)
+            wf.writeframes(pcm.tobytes())
+        return path
+
     def on_deactivate():
         nonlocal recording, feed_thread
         if not recording:
@@ -55,6 +73,12 @@ def main():
             feed_thread.join(timeout=2)
         for chunk in audio.drain():
             stt.feed_audio(chunk)
+
+        raw = audio.get_raw_audio()
+        if raw is not None and len(raw) > 0:
+            wav_path = save_wav(raw)
+            print(f"[saved] {wav_path}")
+
         stt.finalize()
         print("[ready] Press Enter to record")
 
