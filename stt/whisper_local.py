@@ -61,6 +61,7 @@ class WhisperLocalSTT(STTProvider):
             segments, _ = self._model.transcribe(
                 audio_data,
                 language=config.primary_language,
+                initial_prompt=config.whisper_prompt,
                 beam_size=1,
                 best_of=1,
                 vad_filter=True,

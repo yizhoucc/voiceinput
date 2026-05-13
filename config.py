@@ -5,9 +5,22 @@ from dataclasses import dataclass, field
 class Config:
     # STT
     stt_provider: str = "whisper_local"  # whisper_local | apple_speech | whisper_remote
-    whisper_model: str = "base"  # use small model for real-time on CPU; large-v3-turbo is too slow without GPU
-    primary_language: str | None = None  # None = auto-detect, "zh" = Chinese-primary with English mixed
+    whisper_model: str = "base"  # use small model for real-time on CPU; large-v3-turbo needs GPU
+    primary_language: str = "zh"  # "zh" for Chinese-primary with English mixed
     stt_step_ms: int = 2000  # sliding window step in ms
+
+    # Whisper initial_prompt: biases decoder toward recognizing these terms as English
+    # instead of forcing them into Chinese characters
+    whisper_prompt: str = (
+        "以下是一段中英文混合的语音转录。"
+        "Transformer, attention, QKV, query, key, value, "
+        "GPU, CPU, API, Python, JavaScript, TypeScript, "
+        "machine learning, deep learning, neural network, "
+        "model, token, embedding, encoder, decoder, "
+        "GitHub, Docker, Linux, Mac, Windows, "
+        "LLM, GPT, BERT, ResNet, CNN, RNN, LSTM, "
+        "Whisper, Ollama, vLLM, PyTorch, TensorFlow"
+    )
 
     # LLM
     llm_provider: str = "ollama"  # ollama | vllm_remote
@@ -21,7 +34,7 @@ class Config:
     channels: int = 1
 
     # Hotkey
-    hotkey: str = "option+space"
+    hotkey: str = "enter"
 
     # VAD
     vad_threshold: float = 0.5
