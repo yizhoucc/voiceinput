@@ -7,7 +7,7 @@ from config import config
 
 
 class WhisperLocalSTT(STTProvider):
-    """Dual-pass streaming STT: run zh + en in parallel, merge by word confidence."""
+    """Dual-pass streaming STT: run zh + en, merge by segment confidence."""
 
     def __init__(self, on_partial, on_final):
         super().__init__(on_partial, on_final)
@@ -39,8 +39,8 @@ class WhisperLocalSTT(STTProvider):
         self._process(is_final=True)
 
     def _transcribe_language(self, audio_data, lang, prompt):
-        """Run whisper for a single language, return list of (word, start, end, prob)."""
-        segments, _ = self._model.transcribe(
+        """Run whisper for a single language, return segments with word details."""
+        segments, info = self._model.transcribe(
             audio_data,
             language=lang,
             initial_prompt=prompt,
@@ -53,43 +53,82 @@ class WhisperLocalSTT(STTProvider):
                 min_silence_duration_ms=config.silence_duration_ms,
             ),
         )
-        words = []
+        result = []
         for seg in segments:
+            words = []
             if seg.words:
-                for w in seg.words:
-                    words.append((w.word, w.start, w.end, w.probability))
-        return words
+                words = [(w.word, w.start, w.end, w.probability) for w in seg.words]
+            avg_prob = seg.avg_logprob
+            result.append({
+                "text": seg.text.strip(),
+                "start": seg.start,
+                "end": seg.end,
+                "avg_logprob": avg_prob,
+                "words": words,
+            })
+        return result, info.language_probability
 
-    def _merge_dual_pass(self, zh_words, en_words):
-        """Merge zh and en word lists by timestamp, picking higher confidence per region."""
-        if not zh_words and not en_words:
+    def _merge_dual_pass(self, zh_segs, zh_lang_prob, en_segs, en_lang_prob):
+        """Merge zh and en by choosing the better language per time segment."""
+        if not zh_segs and not en_segs:
             return ""
-        if not zh_words:
-            return "".join(w[0] for w in en_words)
-        if not en_words:
-            return "".join(w[0] for w in zh_words)
+        if not zh_segs:
+            return " ".join(s["text"] for s in en_segs)
+        if not en_segs:
+            return " ".join(s["text"] for s in zh_segs)
 
-        # Build a timeline: for each time point, pick the language with higher confidence
-        all_events = []
-        for word, start, end, prob in zh_words:
-            all_events.append((start, end, word, prob, "zh"))
-        for word, start, end, prob in en_words:
-            all_events.append((start, end, word, prob, "en"))
+        # Build time-aligned chunks. For each zh segment, find overlapping en segments
+        # and pick the one with better word-level confidence.
+        all_chunks = []
 
-        all_events.sort(key=lambda x: (x[0], -x[3]))
+        # Tag each segment with language
+        for s in zh_segs:
+            all_chunks.append(("zh", s))
+        for s in en_segs:
+            all_chunks.append(("en", s))
 
-        # Greedy merge: walk through time, skip overlapping words with lower confidence
+        # Sort by start time
+        all_chunks.sort(key=lambda x: x[1]["start"])
+
+        # Greedy: walk through, for overlapping segments pick the one with higher avg word confidence
         result = []
         covered_until = -1.0
 
-        for start, end, word, prob, lang in all_events:
-            # Skip if this word's start is already covered by a higher-confidence word
-            if start < covered_until - 0.05:
-                continue
-            result.append(word)
-            covered_until = end
+        for lang, seg in all_chunks:
+            seg_start = seg["start"]
+            seg_end = seg["end"]
 
-        return "".join(result).strip()
+            # Compute overlap with already covered region
+            overlap = max(0, min(covered_until, seg_end) - max(0, seg_start))
+            seg_duration = seg_end - seg_start
+            if seg_duration <= 0:
+                continue
+
+            # If >50% of this segment is already covered, skip it
+            if overlap / seg_duration > 0.5:
+                continue
+
+            # Compute average word confidence for this segment
+            if seg["words"]:
+                avg_conf = sum(w[3] for w in seg["words"]) / len(seg["words"])
+            else:
+                avg_conf = 0.5
+
+            # Check if there's a competing segment we already added that overlaps
+            # If the last added segment overlaps significantly, compare and maybe replace
+            if result and result[-1][1] > seg_start + 0.1:
+                prev_lang, prev_text, prev_end, prev_conf = result[-1]
+                prev_overlap = prev_end - seg_start
+                if prev_overlap > 0.3:  # significant overlap
+                    if avg_conf > prev_conf:
+                        result[-1] = (lang, seg["text"], seg_end, avg_conf)
+                        covered_until = seg_end
+                    continue
+
+            result.append((lang, seg["text"], seg_end, avg_conf))
+            covered_until = max(covered_until, seg_end)
+
+        return " ".join(item[1] for item in result if item[1]).strip()
 
     def _process(self, is_final: bool):
         if self._processing and not is_final:
@@ -112,10 +151,10 @@ class WhisperLocalSTT(STTProvider):
             zh_prompt = config.whisper_prompt
             en_prompt = "The following is a conversation about technology, AI, machine learning, transformers, QKV, attention, neural networks."
 
-            zh_words = self._transcribe_language(audio_data, "zh", zh_prompt)
-            en_words = self._transcribe_language(audio_data, "en", en_prompt)
+            zh_segs, zh_prob = self._transcribe_language(audio_data, "zh", zh_prompt)
+            en_segs, en_prob = self._transcribe_language(audio_data, "en", en_prompt)
 
-            merged = self._merge_dual_pass(zh_words, en_words)
+            merged = self._merge_dual_pass(zh_segs, zh_prob, en_segs, en_prob)
 
             if not merged:
                 return
