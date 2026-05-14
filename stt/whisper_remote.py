@@ -9,29 +9,30 @@ from config import config
 
 
 class WhisperRemoteSTT(STTProvider):
-    """Streaming STT via remote faster-whisper on 5090 GPU over LAN.
+    """Streaming STT with append-only commits, timestamp-tracked dedup.
 
-    Commit strategy: segments in the stable zone (first half of window)
-    are auto-committed. Segments near the end (unstable tail) stay as partial.
-    Additionally, a pause > 1s between segments triggers commit.
+    - Whisper processes full WINDOW_SECONDS for quality (no context cutting)
+    - Buffer kept for whisper context, trimmed only for memory (>30s)
+    - Global timestamps track which audio has been committed
+    - Only Cmd+V append, never modify editor text
     """
 
-    OVERLAP_SECONDS = 3
     WINDOW_SECONDS = 15
-    STABLE_ZONE_SECONDS = 3.0  # segments older than this get committed
-    PAUSE_COMMIT_SECONDS = 0.5  # pause between segments triggers commit
+    STABLE_SECONDS = 2.0
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
         self._buffer = np.array([], dtype=np.float32)
-        self._last_speaker = None
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
         self._processing = False
-        self._client = httpx.Client(timeout=30.0)
+        self._total_samples_received = 0  # global sample counter
+        self._committed_until_global = 0.0
         self._committed_text: list[str] = []
-        self._buffer_offset = 0  # total samples trimmed so far
+        self._recent_commits: list[str] = []  # last N committed texts for dedup
+        self._last_speaker = None
+        self._client = httpx.Client(timeout=30.0)
 
     def _ensure_model(self):
         pass
@@ -47,8 +48,14 @@ class WhisperRemoteSTT(STTProvider):
         return buf.getvalue()
 
     def feed_audio(self, audio: np.ndarray):
+        flat = audio.flatten()
         with self._lock:
-            self._buffer = np.concatenate([self._buffer, audio.flatten()])
+            self._buffer = np.concatenate([self._buffer, flat])
+            self._total_samples_received += len(flat)
+            # Trim buffer for memory: keep last 30s
+            max_samples = int(30 * config.sample_rate)
+            if len(self._buffer) > max_samples:
+                self._buffer = self._buffer[-max_samples:]
 
         now = time.monotonic()
         if now - self._last_process_time >= self._step_seconds and not self._processing:
@@ -73,6 +80,19 @@ class WhisperRemoteSTT(STTProvider):
         response.raise_for_status()
         return response.json().get("segments", [])
 
+    def _fmt_seg(self, seg, for_commit=False):
+        text = seg.get("text", "").strip()
+        speaker = seg.get("speaker", "unknown")
+        if for_commit and speaker == self._last_speaker:
+            return text
+        if for_commit:
+            self._last_speaker = speaker
+        if speaker == "me":
+            return f"[我] {text}"
+        elif speaker == "other":
+            return f"[他] {text}"
+        return text
+
     def _process(self, is_final: bool):
         if self._processing and not is_final:
             return
@@ -83,101 +103,63 @@ class WhisperRemoteSTT(STTProvider):
                 buf_len = len(self._buffer)
                 if buf_len < config.sample_rate * 0.5:
                     return
-
-                # Window: last WINDOW_SECONDS of buffer
                 window_samples = int(self.WINDOW_SECONDS * config.sample_rate)
-                if is_final:
-                    audio_data = self._buffer.copy()
-                    window_start_in_buf = 0
-                else:
-                    window_start_in_buf = max(0, buf_len - window_samples)
-                    audio_data = self._buffer[window_start_in_buf:].copy()
-
+                start = max(0, buf_len - window_samples)
+                audio_data = self._buffer[start:].copy()
                 audio_duration = len(audio_data) / config.sample_rate
 
+                # Global time of window start
+                total_time = self._total_samples_received / config.sample_rate
+                window_start_global = total_time - audio_duration
+
             if len(audio_data) < config.sample_rate * 0.3:
-                if is_final and self._committed_text:
-                    self.on_final(" ".join(self._committed_text))
                 return
 
             segments = self._transcribe(audio_data)
-
             if not segments:
-                if is_final and self._committed_text:
-                    self.on_final(" ".join(self._committed_text))
                 return
 
-            def fmt_seg(seg, for_commit=False):
-                """Format segment. Only add speaker tag when speaker changes."""
-                text = seg.get("text", "").strip()
-                speaker = seg.get("speaker", "unknown")
-
-                if for_commit and speaker == self._last_speaker:
-                    return text
-                if for_commit:
-                    self._last_speaker = speaker
-
-                if speaker == "me":
-                    return f"[我] {text}"
-                elif speaker == "other":
-                    return f"[他] {text}"
-                return text
-
-            if is_final:
-                # Commit remaining segments to editor (with speaker dedup)
-                all_committed = []
-                for s in segments:
-                    if s.get("text", "").strip():
-                        ct = fmt_seg(s, for_commit=True)
-                        self.on_commit(ct)
-                        all_committed.append(ct)
-                final = " ".join(self._committed_text + all_committed)
-                self.on_final(final)
-                return
-
-            # Split segments into stable (to commit) and unstable (partial)
-            stable_cutoff = audio_duration - self.STABLE_ZONE_SECONDS
-            commit_texts = []
+            stable_cutoff = audio_duration - self.STABLE_SECONDS
+            new_commits = []
             partial_texts = []
 
-            # Check for pause-based commit: find any gap > threshold
-            pause_split = None
-            if len(segments) >= 2:
-                for i in range(len(segments) - 1, 0, -1):
-                    prev_end = segments[i - 1].get("end", 0)
-                    curr_start = segments[i].get("start", 0)
-                    if curr_start - prev_end > self.PAUSE_COMMIT_SECONDS:
-                        pause_split = i
-                        break
-
-            last_committed_end = 0.0
-            for i, seg in enumerate(segments):
+            for seg in segments:
                 text = seg.get("text", "").strip()
                 if not text:
                     continue
                 seg_end = seg.get("end", 0)
 
-                if (seg_end < stable_cutoff
-                        or (pause_split is not None and i < pause_split)):
-                    commit_texts.append(fmt_seg(seg, for_commit=True))
-                    last_committed_end = seg_end
-                else:
-                    partial_texts.append(fmt_seg(seg))
+                # Convert to global time
+                seg_end_global = window_start_global + seg_end
 
-            # Trim buffer only up to the last committed segment's end time
-            if commit_texts and last_committed_end > 0:
-                for ct in commit_texts:
-                    self.on_commit(ct)
-                self._committed_text.extend(commit_texts)
-                trim_samples = int(last_committed_end * config.sample_rate)
-                actual_trim = window_start_in_buf + trim_samples
-                with self._lock:
-                    if actual_trim > 0 and actual_trim < len(self._buffer):
-                        self._buffer = self._buffer[actual_trim:]
-                        self._buffer_offset += actual_trim
+                # Skip already committed segments
+                if seg_end_global <= self._committed_until_global + 0.3:
+                    continue
+
+                if is_final or seg_end < stable_cutoff:
+                    formatted = self._fmt_seg(seg, for_commit=True)
+                    new_commits.append((formatted, seg_end_global))
+                else:
+                    partial_texts.append(self._fmt_seg(seg))
+
+            if new_commits:
+                for text, end_global in new_commits:
+                    # Dedup: skip if same text was recently committed
+                    if text in self._recent_commits:
+                        self._committed_until_global = end_global
+                        continue
+                    self.on_commit(text)
+                    self._committed_text.append(text)
+                    self._recent_commits.append(text)
+                    if len(self._recent_commits) > 10:
+                        self._recent_commits.pop(0)
+                    self._committed_until_global = end_global
 
             display = " ".join(self._committed_text + partial_texts)
-            self.on_partial(display)
+            if is_final:
+                self.on_final(display)
+            else:
+                self.on_partial(display)
 
         except Exception as e:
             print(f"\n[stt-remote] Error: {e}")
@@ -187,7 +169,9 @@ class WhisperRemoteSTT(STTProvider):
     def reset(self):
         with self._lock:
             self._buffer = np.array([], dtype=np.float32)
+            self._total_samples_received = 0
         self._committed_text.clear()
-        self._buffer_offset = 0
+        self._committed_until_global = 0.0
         self._last_process_time = 0.0
         self._last_speaker = None
+        self._recent_commits = []
