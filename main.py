@@ -1,3 +1,4 @@
+import argparse
 import threading
 import signal
 import sys
@@ -11,6 +12,15 @@ from output.terminal import TerminalOutput
 from output.system_insert import SystemTextInserter
 from hotkey import HotkeyListener, check_accessibility
 from config import config
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="VoiceInput: streaming voice input tool")
+    parser.add_argument("--no-llm", action="store_true", help="Disable LLM polish (saves ~15GB VRAM)")
+    parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090 needed)")
+    parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
+    parser.add_argument("--model", type=str, default=None, help="Whisper model name (default: from config)")
+    return parser.parse_args()
 
 
 def create_stt(on_partial, on_final, on_commit=None):
@@ -27,6 +37,17 @@ AUDIO_DIR.mkdir(exist_ok=True)
 
 
 def main():
+    args = parse_args()
+
+    if args.local:
+        config.stt_provider = "whisper_local"
+    if args.no_llm:
+        config.llm_polish_enabled = False
+    if args.language:
+        config.primary_language = None if args.language == "auto" else args.language
+    if args.model:
+        config.whisper_model = args.model
+
     output = TerminalOutput()
     inserter = SystemTextInserter()
 
@@ -132,6 +153,7 @@ def main():
         print(f"STT: whisper_remote ({config.whisper_remote_url})")
     else:
         print(f"STT: whisper_local ({config.whisper_model})")
+    print(f"LLM: {'enabled' if config.llm_polish_enabled else 'disabled'}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
     print()
 
