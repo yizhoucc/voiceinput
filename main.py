@@ -10,6 +10,7 @@ sys.stdout.reconfigure(line_buffering=True)
 import numpy as np
 from audio import AudioCapture
 from output.terminal import TerminalOutput
+from output.system_insert import SystemTextInserter
 from hotkey import HotkeyListener, check_accessibility
 from config import config
 
@@ -28,12 +29,15 @@ AUDIO_DIR.mkdir(exist_ok=True)
 
 def main():
     output = TerminalOutput()
+    inserter = SystemTextInserter()
 
     def on_partial(text: str):
         output.show_partial(text)
+        inserter.replace_last(text)
 
     def on_final(text: str):
         output.show_final(text)
+        inserter.replace_last(text)
 
     stt = create_stt(on_partial=on_partial, on_final=on_final)
     audio = AudioCapture()
@@ -53,18 +57,19 @@ def main():
             return
         recording = True
         stt.reset()
+        inserter.reset()
         stop_event.clear()
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
         feed_thread.start()
-        print("[recording] Speak now... (Ctrl+Option+1 or Enter to stop)")
+        print("[recording] Speak now... (F5 or Enter to stop)")
 
     def save_wav(raw_audio: np.ndarray) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = AUDIO_DIR / f"{ts}.wav"
         with wave.open(str(path), "wb") as wf:
             wf.setnchannels(config.channels)
-            wf.setsampwidth(2)  # 16-bit
+            wf.setsampwidth(2)
             wf.setframerate(config.sample_rate)
             pcm = (raw_audio * 32767).clip(-32768, 32767).astype(np.int16)
             wf.writeframes(pcm.tobytes())
@@ -88,7 +93,8 @@ def main():
             print(f"[saved] {wav_path}")
 
         stt.finalize()
-        print("[ready] Ctrl+Option+1 or Enter to record")
+        inserter.reset()
+        print("[ready] F5 or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
@@ -107,9 +113,10 @@ def main():
     print("done.")
     print()
     if check_accessibility():
-        print("Hotkey: Ctrl+Option+1 to toggle recording (global)")
+        print("Hotkey: F5 to toggle recording (global)")
     else:
-        print("Hotkey: Enter to toggle (grant Accessibility for Ctrl+Option+1)")
+        print("Hotkey: Enter to toggle (grant Accessibility for F5 global)")
+    print("Text will be inserted at cursor position in any app.")
     print("Press Ctrl+C to exit.")
     print()
 
@@ -117,7 +124,6 @@ def main():
 
     hotkey.start()
 
-    # Keep main thread alive
     threading.Event().wait()
 
 
