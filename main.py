@@ -36,7 +36,13 @@ def main():
 
     def on_final(text: str):
         output.show_final(text)
-        inserter.insert(text)
+        if text.strip():
+            print(f"[insert] Pasting {len(text)} chars to cursor...")
+            try:
+                inserter.insert(text)
+                print("[insert] Done.")
+            except Exception as e:
+                print(f"[insert] Failed: {e}")
 
     stt = create_stt(on_partial=on_partial, on_final=on_final)
     audio = AudioCapture()
