@@ -26,7 +26,7 @@ class Config:
     llm_polish_enabled: bool = False
     vllm_url: str = "http://localhost:8000"
     vllm_model: str = "Qwen/Qwen3-8B"
-    quantize: bool = False
+    quantize: bool = True
 
     custom_corrections: dict = field(default_factory=lambda: {
         "Cloud": "Claude",

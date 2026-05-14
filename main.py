@@ -20,8 +20,8 @@ def parse_args():
                         help="Enable LLM polish. Optionally specify model name (e.g. --llm Qwen/Qwen3-8B)")
     parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090)")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
-    parser.add_argument("--quantize", action="store_true",
-                        help="Use quantized inference (whisper int8, LLM int4). Saves ~50%% VRAM")
+    parser.add_argument("--no-quantize", action="store_true",
+                        help="Disable quantization (use full precision, more VRAM)")
     return parser.parse_args()
 
 
@@ -49,8 +49,8 @@ def main():
             config.vllm_model = args.llm
     if args.language:
         config.primary_language = None if args.language == "auto" else args.language
-    if args.quantize:
-        config.quantize = True
+    if args.no_quantize:
+        config.quantize = False
 
     output = TerminalOutput()
     inserter = SystemTextInserter()
