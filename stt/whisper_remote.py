@@ -17,16 +17,14 @@ class WhisperRemoteSTT(STTProvider):
     """
 
     OVERLAP_SECONDS = 3
-    WINDOW_SECONDS = 12
-    STABLE_ZONE_SECONDS = 2.0  # segments older than this get committed
-    PAUSE_COMMIT_SECONDS = 0.5  # pause triggers commit
-    FORCE_COMMIT_SECONDS = 4.0  # force commit if nothing committed for this long
+    WINDOW_SECONDS = 15
+    STABLE_ZONE_SECONDS = 3.0  # segments older than this get committed
+    PAUSE_COMMIT_SECONDS = 0.5  # pause between segments triggers commit
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
         self._buffer = np.array([], dtype=np.float32)
-        self._last_commit_time = 0.0
-        self._last_speaker = None  # track last committed speaker for tag dedup
+        self._last_speaker = None
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
@@ -152,10 +150,6 @@ class WhisperRemoteSTT(STTProvider):
                         pause_split = i
                         break
 
-            # Force commit: if no commit for too long, commit everything
-            now = time.monotonic()
-            force_commit = (now - self._last_commit_time > self.FORCE_COMMIT_SECONDS)
-
             last_committed_end = 0.0
             for i, seg in enumerate(segments):
                 text = seg.get("text", "").strip()
@@ -163,12 +157,8 @@ class WhisperRemoteSTT(STTProvider):
                     continue
                 seg_end = seg.get("end", 0)
 
-                is_last = (i == len(segments) - 1)
-                force_this = force_commit and (not is_last or len(segments) == 1)
-
                 if (seg_end < stable_cutoff
-                        or (pause_split is not None and i < pause_split)
-                        or force_this):
+                        or (pause_split is not None and i < pause_split)):
                     commit_texts.append(fmt_seg(seg, for_commit=True))
                     last_committed_end = seg_end
                 else:
@@ -179,7 +169,6 @@ class WhisperRemoteSTT(STTProvider):
                 for ct in commit_texts:
                     self.on_commit(ct)
                 self._committed_text.extend(commit_texts)
-                self._last_commit_time = now
                 trim_samples = int(last_committed_end * config.sample_rate)
                 actual_trim = window_start_in_buf + trim_samples
                 with self._lock:
@@ -201,5 +190,4 @@ class WhisperRemoteSTT(STTProvider):
         self._committed_text.clear()
         self._buffer_offset = 0
         self._last_process_time = 0.0
-        self._last_commit_time = time.monotonic()
         self._last_speaker = None
