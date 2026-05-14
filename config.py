@@ -23,7 +23,7 @@ class Config:
     whisper_remote_url: str = "http://localhost:8787"
 
     # LLM
-    llm_polish_enabled: bool = True
+    llm_polish_enabled: bool = False
     vllm_url: str = "http://localhost:8000"
     vllm_model: str = "Qwen/Qwen3-8B"
 

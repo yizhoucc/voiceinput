@@ -16,10 +16,11 @@ from config import config
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VoiceInput: streaming voice input tool")
-    parser.add_argument("--no-llm", action="store_true", help="Disable LLM polish (saves ~15GB VRAM)")
+    parser.add_argument("--llm", action="store_true", help="Enable LLM polish (uses ~15GB extra VRAM)")
     parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090 needed)")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
-    parser.add_argument("--model", type=str, default=None, help="Whisper model name (default: from config)")
+    parser.add_argument("--model", type=str, default=None, help="Whisper model (HuggingFace name, e.g. large-v3-turbo, small, base)")
+    parser.add_argument("--llm-model", type=str, default=None, help="LLM model for polish (HuggingFace name, e.g. Qwen/Qwen3-8B)")
     return parser.parse_args()
 
 
@@ -41,12 +42,13 @@ def main():
 
     if args.local:
         config.stt_provider = "whisper_local"
-    if args.no_llm:
-        config.llm_polish_enabled = False
+    config.llm_polish_enabled = args.llm
     if args.language:
         config.primary_language = None if args.language == "auto" else args.language
     if args.model:
         config.whisper_model = args.model
+    if args.llm_model:
+        config.vllm_model = args.llm_model
 
     output = TerminalOutput()
     inserter = SystemTextInserter()
