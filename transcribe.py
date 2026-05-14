@@ -1,11 +1,11 @@
-"""Batch transcription CLI: transcribe audio files to text documents.
+"""Batch transcription CLI: transcribe audio files to polished text documents.
 
 Usage:
-  python transcribe.py recording.wav              # single file
+  python transcribe.py recording.wav              # single file → .transcript.txt
   python transcribe.py recordings/                 # entire directory
-  python transcribe.py recordings/ -o output.txt   # custom output path
-  python transcribe.py recording.wav --local       # use Mac CPU instead of 5090
-  python transcribe.py recording.wav --language zh  # force language
+  python transcribe.py recording.wav --format srt  # SRT subtitles
+  python transcribe.py recording.wav --no-polish   # skip LLM polish
+  python transcribe.py recording.wav --local       # Mac CPU only
 """
 import argparse
 import sys
@@ -16,20 +16,23 @@ from datetime import timedelta
 
 sys.stdout.reconfigure(line_buffering=True)
 
+PARAGRAPH_PAUSE = 2.0  # seconds of silence to start a new paragraph
+SPEAKER_CHANGE_PARAGRAPH = True  # new paragraph on speaker change
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Transcribe audio files to text")
     parser.add_argument("path", help="Audio file or directory of audio files")
     parser.add_argument("-o", "--output", help="Output file path (default: <input>.transcript.txt)")
     parser.add_argument("--local", action="store_true", help="Use local Mac CPU whisper (no 5090)")
+    parser.add_argument("--no-polish", action="store_true", help="Skip LLM polish")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto")
-    parser.add_argument("--speaker", action="store_true", help="Enable speaker identification")
     parser.add_argument("--format", choices=["txt", "srt", "tsv"], default="txt",
                         help="Output format: txt (plain), srt (subtitles), tsv (timestamps)")
     return parser.parse_args()
 
 
-def transcribe_remote(filepath, language=None, speaker=False):
+def transcribe_remote(filepath, language=None):
     import httpx
     from server_manager import ensure_servers, ensure_ssh_tunnel
 
@@ -43,7 +46,7 @@ def transcribe_remote(filepath, language=None, speaker=False):
         files={"audio": open(filepath, "rb")},
         data={
             "language": lang,
-            "identify_speaker": "true" if speaker else "false",
+            "identify_speaker": "true",
         },
         timeout=300.0)
     r.raise_for_status()
@@ -81,6 +84,35 @@ def transcribe_local(filepath, language=None):
     }
 
 
+def polish_segments(segments):
+    """Polish text with LLM, using overlap context."""
+    from llm.vllm_remote import VLLMPolisher
+    from server_manager import ensure_servers, ensure_ssh_tunnel
+
+    ensure_ssh_tunnel(8000)
+    if not ensure_servers(need_llm=True):
+        print("[polish] vLLM not available, skipping polish.", flush=True)
+        return segments
+
+    polisher = VLLMPolisher()
+    polished = []
+    prev_text = ""
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            polished.append(seg)
+            continue
+        try:
+            fixed = polisher.polish(text, context_before=prev_text)
+            seg = dict(seg)
+            seg["text"] = fixed
+            prev_text = fixed
+        except Exception:
+            prev_text = text
+        polished.append(seg)
+    return polished
+
+
 def format_time_srt(seconds):
     td = timedelta(seconds=seconds)
     hours = int(td.total_seconds() // 3600)
@@ -90,51 +122,95 @@ def format_time_srt(seconds):
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
 
 
-def format_output(data, fmt, speaker_enabled):
+def speaker_label(speaker):
+    if speaker == "me":
+        return "[我]"
+    elif speaker == "other":
+        return "[他]"
+    return None
+
+
+def format_txt(segments, lang, lang_prob):
+    lines = [f"# Language: {lang} ({lang_prob:.0%})\n"]
+    prev_end = 0.0
+    prev_speaker = None
+
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+
+        start = seg.get("start", 0)
+        speaker = seg.get("speaker", "unknown")
+        gap = start - prev_end
+
+        # New paragraph on long pause or speaker change
+        need_paragraph = False
+        if gap > PARAGRAPH_PAUSE and prev_end > 0:
+            need_paragraph = True
+        if SPEAKER_CHANGE_PARAGRAPH and speaker != prev_speaker and prev_speaker is not None:
+            need_paragraph = True
+
+        if need_paragraph:
+            lines.append("")
+
+        label = speaker_label(speaker)
+        if label and speaker != prev_speaker:
+            lines.append(f"{label} {text}")
+        else:
+            lines.append(text)
+
+        prev_end = seg.get("end", start)
+        prev_speaker = speaker
+
+    return "\n".join(lines) + "\n"
+
+
+def format_srt(segments):
+    lines = []
+    idx = 1
+    prev_speaker = None
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        start = format_time_srt(seg["start"])
+        end = format_time_srt(seg["end"])
+        speaker = seg.get("speaker", "unknown")
+        label = speaker_label(speaker)
+        if label and speaker != prev_speaker:
+            text = f"{label} {text}"
+        prev_speaker = speaker
+        lines.append(f"{idx}")
+        lines.append(f"{start} --> {end}")
+        lines.append(text)
+        lines.append("")
+        idx += 1
+    return "\n".join(lines)
+
+
+def format_tsv(segments):
+    lines = ["start\tend\tspeaker\ttext"]
+    for seg in segments:
+        text = seg.get("text", "").strip()
+        if not text:
+            continue
+        spk = seg.get("speaker", "unknown")
+        lines.append(f"{seg['start']:.2f}\t{seg['end']:.2f}\t{spk}\t{text}")
+    return "\n".join(lines) + "\n"
+
+
+def format_output(data, fmt):
     segments = data["segments"]
     lang = data.get("language", "?")
     lang_prob = data.get("language_probability", 0)
-    lines = []
 
     if fmt == "txt":
-        lines.append(f"# Language: {lang} ({lang_prob:.0%})\n")
-        for seg in segments:
-            text = seg["text"]
-            if not text:
-                continue
-            if speaker_enabled and seg.get("speaker") in ("me", "other"):
-                tag = "[我]" if seg["speaker"] == "me" else "[他]"
-                lines.append(f"{tag} {text}")
-            else:
-                lines.append(text)
-        return "\n".join(lines) + "\n"
-
+        return format_txt(segments, lang, lang_prob)
     elif fmt == "srt":
-        idx = 1
-        for seg in segments:
-            if not seg["text"]:
-                continue
-            start = format_time_srt(seg["start"])
-            end = format_time_srt(seg["end"])
-            text = seg["text"]
-            if speaker_enabled and seg.get("speaker") in ("me", "other"):
-                tag = "[我]" if seg["speaker"] == "me" else "[他]"
-                text = f"{tag} {text}"
-            lines.append(f"{idx}")
-            lines.append(f"{start} --> {end}")
-            lines.append(text)
-            lines.append("")
-            idx += 1
-        return "\n".join(lines)
-
+        return format_srt(segments)
     elif fmt == "tsv":
-        lines.append("start\tend\tspeaker\ttext")
-        for seg in segments:
-            if not seg["text"]:
-                continue
-            spk = seg.get("speaker", "unknown")
-            lines.append(f"{seg['start']:.2f}\t{seg['end']:.2f}\t{spk}\t{seg['text']}")
-        return "\n".join(lines) + "\n"
+        return format_tsv(segments)
 
 
 def get_audio_files(path):
@@ -143,15 +219,13 @@ def get_audio_files(path):
     if p.is_file():
         return [p]
     elif p.is_dir():
-        files = sorted(f for f in p.iterdir() if f.suffix.lower() in exts)
-        return files
+        return sorted(f for f in p.iterdir() if f.suffix.lower() in exts)
     else:
         print(f"[error] Not found: {path}")
         sys.exit(1)
 
 
 def convert_to_wav(filepath):
-    """Convert non-wav to temp wav using ffmpeg."""
     if filepath.suffix.lower() == ".wav":
         return filepath, False
     tmp = Path(f"/tmp/voiceinput_convert_{filepath.stem}.wav")
@@ -182,13 +256,21 @@ def main():
         if args.local:
             data = transcribe_local(str(wav_path), args.language)
         else:
-            data = transcribe_remote(str(wav_path), args.language, args.speaker)
-
-        output_text = format_output(data, args.format, args.speaker)
-        all_outputs.append((filepath.name, output_text))
+            data = transcribe_remote(str(wav_path), args.language)
 
         seg_count = len([s for s in data["segments"] if s.get("text", "").strip()])
-        print(f"{seg_count} segments", flush=True)
+        print(f"{seg_count} segments", end="", flush=True)
+
+        # LLM polish
+        if not args.no_polish and not args.local:
+            print(" → polishing...", end="", flush=True)
+            data["segments"] = polish_segments(data["segments"])
+            print(" done", end="", flush=True)
+
+        print(flush=True)
+
+        output_text = format_output(data, args.format)
+        all_outputs.append((filepath.name, output_text))
 
         if converted:
             wav_path.unlink()
