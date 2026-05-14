@@ -20,6 +20,8 @@ def parse_args():
                         help="Enable LLM polish. Optionally specify model name (e.g. --llm Qwen/Qwen3-8B)")
     parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090)")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
+    parser.add_argument("--quantize", action="store_true",
+                        help="Use quantized inference (whisper int8, LLM int4). Saves ~50%% VRAM")
     return parser.parse_args()
 
 
@@ -47,6 +49,8 @@ def main():
             config.vllm_model = args.llm
     if args.language:
         config.primary_language = None if args.language == "auto" else args.language
+    if args.quantize:
+        config.quantize = True
 
     output = TerminalOutput()
     inserter = SystemTextInserter()
@@ -153,8 +157,14 @@ def main():
         print(f"STT: whisper_remote ({config.whisper_remote_url})")
     else:
         print(f"STT: whisper_local ({config.whisper_model})")
-    print(f"LLM: {'enabled' if config.llm_polish_enabled else 'disabled'}")
+    llm_info = "disabled"
+    if config.llm_polish_enabled:
+        llm_info = config.vllm_model
+    print(f"LLM: {llm_info}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
+    if config.quantize:
+        print("Quantize: ON (whisper int8, LLM requires quantized server)")
+        print("  Start quantized vLLM: vllm serve MODEL --quantization fp8 --dtype float16")
     print()
 
     print("[stt] Loading...", end=" ", flush=True)
