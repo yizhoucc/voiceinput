@@ -11,6 +11,7 @@ import numpy as np
 from audio import AudioCapture
 from output.terminal import TerminalOutput
 from output.system_insert import SystemTextInserter
+from output.overlay import Overlay
 from hotkey import HotkeyListener, check_accessibility
 from config import config
 
@@ -30,13 +31,16 @@ AUDIO_DIR.mkdir(exist_ok=True)
 def main():
     output = TerminalOutput()
     inserter = SystemTextInserter()
+    overlay = Overlay()
 
     def on_partial(text: str):
         output.show_partial(text)
-        inserter.update_partial(text)
+        # Show uncommitted portion in floating overlay
+        overlay.show(text)
 
     def on_final(text: str):
         output.show_final(text)
+        overlay.hide()
 
     def on_commit(text: str):
         inserter.commit(text)
