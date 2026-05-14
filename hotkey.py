@@ -15,20 +15,26 @@ def check_accessibility() -> bool:
 def request_accessibility():
     print("[hotkey] Accessibility permission required for global hotkey.")
     print("[hotkey] Opening System Settings → Privacy → Accessibility...")
-    print("[hotkey] Add your terminal app, then restart.")
-    print()
     subprocess.Popen([
         "open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
     ])
 
 
 class HotkeyListener:
-    """F5 key to toggle recording. Falls back to Enter if no Accessibility."""
+    """Two hotkeys:
+    Ctrl+Shift+R = smart mode (speaker-change auto-commit)
+    Ctrl+Shift+E = manual mode (only commit on stop)
 
-    def __init__(self, on_activate, on_deactivate):
+    Falls back to Enter/E in terminal if no Accessibility.
+    """
+
+    def __init__(self, on_activate, on_deactivate, on_activate_manual, on_deactivate_manual):
         self._on_activate = on_activate
         self._on_deactivate = on_deactivate
+        self._on_activate_manual = on_activate_manual
+        self._on_deactivate_manual = on_deactivate_manual
         self._active = False
+        self._mode = None  # "smart" or "manual"
         self._use_pynput = False
 
     def start(self):
@@ -37,7 +43,7 @@ class HotkeyListener:
             self._start_pynput()
         else:
             request_accessibility()
-            print("[hotkey] Falling back to Enter key toggle.\n")
+            print("[hotkey] Falling back to terminal keys.\n")
             self._start_terminal()
 
     def _start_pynput(self):
@@ -50,7 +56,25 @@ class HotkeyListener:
         )
         self._listener.daemon = True
         self._listener.start()
-        print("[hotkey] Listening for Ctrl+Shift+R (global toggle)")
+        print("[hotkey] Ctrl+Shift+R = smart mode (speaker-change auto-commit)")
+        print("[hotkey] Ctrl+Shift+E = manual mode (commit only on stop)")
+
+    def _check_hotkey(self, key):
+        from pynput import keyboard
+        if not ("ctrl" in self._pressed and "shift" in self._pressed):
+            return None
+        # Ctrl+Shift+R = 0x12, Ctrl+Shift+E = 0x05
+        if hasattr(key, "char"):
+            if key.char == "\x12":
+                return "smart"
+            elif key.char == "\x05":
+                return "manual"
+        if hasattr(key, "vk"):
+            if key.vk == 15:  # r
+                return "smart"
+            elif key.vk == 14:  # e
+                return "manual"
+        return None
 
     def _on_press(self, key):
         from pynput import keyboard
@@ -58,12 +82,10 @@ class HotkeyListener:
             self._pressed.add("ctrl")
         elif key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
             self._pressed.add("shift")
-        elif hasattr(key, "char") and key.char == "\x12":  # Ctrl+Shift+R sends 0x12
-            if "ctrl" in self._pressed and "shift" in self._pressed:
-                threading.Thread(target=self._toggle, daemon=True).start()
-        elif hasattr(key, "vk") and key.vk == 15:  # 'r' key vk code
-            if "ctrl" in self._pressed and "shift" in self._pressed:
-                threading.Thread(target=self._toggle, daemon=True).start()
+        else:
+            mode = self._check_hotkey(key)
+            if mode:
+                threading.Thread(target=self._toggle, args=(mode,), daemon=True).start()
 
     def _on_release(self, key):
         from pynput import keyboard
@@ -79,18 +101,29 @@ class HotkeyListener:
     def _terminal_loop(self):
         while True:
             try:
-                input()
-                self._toggle()
+                line = input()
+                if line.strip().lower() == "e":
+                    self._toggle("manual")
+                else:
+                    self._toggle("smart")
             except EOFError:
                 break
 
-    def _toggle(self):
+    def _toggle(self, mode):
         if self._active:
+            if self._mode == "manual":
+                self._on_deactivate_manual()
+            else:
+                self._on_deactivate()
             self._active = False
-            self._on_deactivate()
+            self._mode = None
         else:
             self._active = True
-            self._on_activate()
+            self._mode = mode
+            if mode == "manual":
+                self._on_activate_manual()
+            else:
+                self._on_activate()
 
     def stop(self):
         if self._use_pynput and hasattr(self, "_listener"):
