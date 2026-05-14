@@ -138,6 +138,7 @@ class WhisperRemoteSTT(STTProvider):
                         pause_split = i
                         break
 
+            last_committed_end = 0.0
             for i, seg in enumerate(segments):
                 text = seg.get("text", "").strip()
                 if not text:
@@ -148,13 +149,15 @@ class WhisperRemoteSTT(STTProvider):
                 # Commit if: in stable zone OR before a pause gap
                 if seg_end < stable_cutoff or (pause_split is not None and i < pause_split):
                     commit_texts.append(formatted)
+                    last_committed_end = seg_end
                 else:
                     partial_texts.append(formatted)
 
-            # Commit stable text and trim buffer
-            if commit_texts:
+            # Trim buffer only up to the last committed segment's end time
+            # (not stable_cutoff, which might cut into uncommitted audio)
+            if commit_texts and last_committed_end > 0:
                 self._committed_text.extend(commit_texts)
-                trim_samples = int(stable_cutoff * config.sample_rate)
+                trim_samples = int(last_committed_end * config.sample_rate)
                 actual_trim = window_start_in_buf + trim_samples
                 with self._lock:
                     if actual_trim > 0 and actual_trim < len(self._buffer):
