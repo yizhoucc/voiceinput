@@ -33,16 +33,11 @@ def main():
 
     def on_partial(text: str):
         output.show_partial(text)
+        inserter.replace_last(text)
 
     def on_final(text: str):
         output.show_final(text)
-        if text.strip():
-            print(f"[insert] Pasting {len(text)} chars to cursor...")
-            try:
-                inserter.insert(text)
-                print("[insert] Done.")
-            except Exception as e:
-                print(f"[insert] Failed: {e}")
+        inserter.replace_last(text)
 
     stt = create_stt(on_partial=on_partial, on_final=on_final)
     audio = AudioCapture()
@@ -97,6 +92,7 @@ def main():
             print(f"[saved] {wav_path}")
 
         stt.finalize()
+        inserter.reset()
         print("[ready] F5 or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
