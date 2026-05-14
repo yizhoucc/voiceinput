@@ -57,6 +57,7 @@ def main():
             return
         recording = True
         stt.reset()
+        inserter.reset()
         stop_event.clear()
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
@@ -92,7 +93,8 @@ def main():
             print(f"[saved] {wav_path}")
 
         stt.finalize()
-        inserter.reset()
+        # Don't reset inserter here — let the final text be inserted first
+        # Reset happens in on_activate before next recording
         print("[ready] F5 or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
