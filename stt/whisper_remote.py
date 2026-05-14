@@ -16,8 +16,8 @@ class WhisperRemoteSTT(STTProvider):
     flip-flopping when switching between Chinese and English.
     """
 
-    OVERLAP_SECONDS = 2  # overlap with committed region for context
-    WINDOW_SECONDS = 8   # max new audio to process at once
+    OVERLAP_SECONDS = 3  # overlap with committed region for context
+    WINDOW_SECONDS = 12  # max new audio to process at once
 
     def __init__(self, on_partial, on_final):
         super().__init__(on_partial, on_final)

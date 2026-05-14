@@ -12,8 +12,8 @@ class WhisperLocalSTT(STTProvider):
     Uses incremental commit to prevent language flip-flopping.
     """
 
-    OVERLAP_SECONDS = 2
-    WINDOW_SECONDS = 8
+    OVERLAP_SECONDS = 3
+    WINDOW_SECONDS = 12
 
     def __init__(self, on_partial, on_final):
         super().__init__(on_partial, on_final)
