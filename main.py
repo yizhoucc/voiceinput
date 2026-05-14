@@ -70,17 +70,14 @@ def main():
 
     def on_partial(text: str):
         output.show_partial(text)
+        inserter.update(text)
 
     def on_final(text: str):
         output.show_final(text)
-        # On final, polish any remaining unpolished commits
-        nonlocal polished_count
-        while polished_count < len(commit_buffer):
-            polish_and_insert(polished_count)
+        inserter.update(text)
 
     def on_commit(text: str):
         commit_buffer.append(text)
-        try_polish_pending()
 
     stt = create_stt(on_partial=on_partial, on_final=on_final, on_commit=on_commit)
     audio = AudioCapture()

@@ -19,7 +19,7 @@ class WhisperRemoteSTT(STTProvider):
     """
 
     WINDOW_SECONDS = 15
-    MIN_COMMIT_CHARS = 3  # don't commit fewer than this many new chars
+    MIN_COMMIT_CHARS = 2  # don't commit fewer than this many new chars
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
@@ -126,42 +126,48 @@ class WhisperRemoteSTT(STTProvider):
             current_full = self._format_segments(segments)
 
             if is_final:
-                # Commit everything not yet committed
-                new_text = current_full
-                if new_text and new_text != self._committed_text_str:
-                    to_commit = new_text[len(self._committed_text_str):] if new_text.startswith(self._committed_text_str) else new_text
-                    if to_commit.strip():
-                        self.on_commit(to_commit.strip())
-                    self._committed_text_str = new_text
-                self.on_final(self._committed_text_str)
+                # Commit everything remaining
+                to_commit = current_full.strip()
+                cleaned = to_commit.replace("[我]", "").replace("[他]", "").strip()
+                if cleaned:
+                    self.on_commit(to_commit)
+                self.on_final(current_full)
                 return
 
-            # Find stable prefix: chars that are the same in prev and current
+            # Check if window slid past our committed content
+            if self._committed_text_str and not current_full.startswith(self._committed_text_str[:20]):
+                # Window slid. Commit any remaining text from previous window.
+                remaining = self._prev_full_text[len(self._committed_text_str):].strip()
+                cleaned = remaining.replace("[我]", "").replace("[他]", "").strip()
+                if cleaned:
+                    self.on_commit(remaining)
+                # Reset for new window
+                self._committed_text_str = ""
+                self._prev_full_text = ""
+
+            # Find stable prefix: chars same in prev and current
             prefix_len = self._common_prefix_len(self._prev_full_text, current_full)
 
-            # Commit the stable prefix up to the last space (word boundary)
-            # but only the NEW part (after already committed text)
+            # Commit new stable text
             committed_len = len(self._committed_text_str)
             if prefix_len > committed_len + self.MIN_COMMIT_CHARS:
-                # Find last space before prefix_len for clean word boundary
                 commit_end = prefix_len
                 last_space = current_full.rfind(" ", committed_len, commit_end)
                 if last_space > committed_len:
                     commit_end = last_space
 
                 new_committed = current_full[committed_len:commit_end].strip()
-                if new_committed:
+                # Skip if only speaker tags with no real content
+                cleaned = new_committed.replace("[我]", "").replace("[他]", "").strip()
+                if cleaned:
                     self.on_commit(new_committed)
                     self._committed_text_str = current_full[:commit_end]
 
-            # Update previous for next comparison
             self._prev_full_text = current_full
 
-            # Display: committed + partial (the unstable tail)
+            # Display: all committed (including from previous windows) + current partial
             partial = current_full[len(self._committed_text_str):].strip()
-            display = self._committed_text_str
-            if partial:
-                display += " " + partial
+            display = current_full  # show everything whisper returns
             self.on_partial(display)
 
         except Exception as e:
