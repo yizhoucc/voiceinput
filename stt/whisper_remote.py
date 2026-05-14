@@ -18,7 +18,7 @@ class WhisperRemoteSTT(STTProvider):
 
     OVERLAP_SECONDS = 3
     WINDOW_SECONDS = 12
-    STABLE_ZONE_SECONDS = 6  # segments older than this within window get committed
+    STABLE_ZONE_SECONDS = 3  # segments older than this within window get committed
     PAUSE_COMMIT_SECONDS = 1.0  # silence gap to trigger commit
 
     def __init__(self, on_partial, on_final):
