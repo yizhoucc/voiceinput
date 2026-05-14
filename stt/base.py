@@ -10,14 +10,20 @@ class STTProvider(ABC):
         self.on_final = on_final
         self.on_commit = on_commit or (lambda _: None)
 
+    def warmup(self):
+        """Load model / warm up. Override in subclasses."""
+
     @abstractmethod
     def feed_audio(self, audio: np.ndarray):
-        """Feed audio chunk to the STT engine."""
+        pass
 
     @abstractmethod
     def finalize(self):
-        """Signal end of speech, flush any remaining audio."""
+        pass
 
     @abstractmethod
     def reset(self):
-        """Reset state for a new utterance."""
+        pass
+
+    def prepare_finalize(self):
+        """Reset commit cursor so finalize processes all audio. Override if needed."""

@@ -2,17 +2,10 @@ import httpx
 from llm.base import LLMProvider
 from config import config
 
-
-def build_system_prompt():
-    corrections = config.custom_corrections
-    correction_lines = "\n".join(f'  "{k}" → "{v}"' for k, v in corrections.items())
-    return f"""你是语音转录修正助手。修正以下类型的错误：
+SYSTEM_PROMPT = """你是语音转录修正助手。修正以下类型的错误：
 1. 英文术语被错误转成中文谐音（如"穿梳"应为"Transformer"）
 2. 错别字和语音识别错误
 3. 标点符号缺失
-
-已知纠正映射（必须执行）：
-{correction_lines}
 
 技术领域：AI/ML（Transformer、Attention、QKV、BERT、GPT、RL、强化学习、Claude、Anthropic等）
 
@@ -27,18 +20,16 @@ def build_system_prompt():
 class VLLMPolisher(LLMProvider):
     def __init__(self):
         self._client = httpx.Client(timeout=30.0)
-        self._system_prompt = build_system_prompt()
 
-    def polish(self, text: str, context_before: str = "", context_after: str = "") -> str:
+    def polish(self, text: str, context_before: str = "") -> str:
         if not text.strip():
             return text
 
-        # Apply simple corrections first (fast, no LLM needed)
+        # Dict corrections first (instant, guaranteed)
         corrected = text
         for wrong, right in config.custom_corrections.items():
             corrected = corrected.replace(wrong, right)
 
-        # If simple corrections changed nothing interesting, still run LLM for grammar/punctuation
         user_msg = ""
         if context_before:
             user_msg += f"[上文] {context_before}\n"
@@ -50,7 +41,7 @@ class VLLMPolisher(LLMProvider):
                 json={
                     "model": config.vllm_model,
                     "messages": [
-                        {"role": "system", "content": self._system_prompt},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_msg},
                     ],
                     "max_tokens": len(corrected) * 2 + 50,

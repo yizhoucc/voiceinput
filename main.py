@@ -1,14 +1,12 @@
 import threading
 import signal
 import sys
-import wave
-from datetime import datetime
 from pathlib import Path
 
 sys.stdout.reconfigure(line_buffering=True)
 
-import numpy as np
 from audio import AudioCapture
+from audio_utils import save_wav
 from output.terminal import TerminalOutput
 from output.system_insert import SystemTextInserter
 from hotkey import HotkeyListener, check_accessibility
@@ -32,7 +30,6 @@ def main():
     output = TerminalOutput()
     inserter = SystemTextInserter()
 
-    # LLM polisher
     polisher = None
     if config.llm_polish_enabled:
         try:
@@ -42,16 +39,18 @@ def main():
         except Exception as e:
             print(f"[llm] Polish disabled: {e}")
 
-    # State
-    current_mode = [None]
-    commit_history = []  # for overlap context
+    mode = None
+    recording = False
+    last_commit = ""
+    feed_thread = None
+    stop_event = threading.Event()
 
     def polish_text(text: str) -> str:
+        nonlocal last_commit
         if not polisher:
             return text
-        ctx_before = commit_history[-1] if commit_history else ""
         try:
-            result = polisher.polish(text, context_before=ctx_before)
+            result = polisher.polish(text, context_before=last_commit)
             if result and result.strip():
                 return result
         except Exception as e:
@@ -65,19 +64,17 @@ def main():
         output.show_final(text)
 
     def on_commit(text: str):
-        if current_mode[0] == "manual":
+        nonlocal last_commit
+        if mode == "manual":
             return
         polished = polish_text(text)
         if polished != text:
             print(f"\n[polish] {text[:30]}... → {polished[:30]}...")
         inserter.paste(polished + " ")
-        commit_history.append(polished)
+        last_commit = polished
 
     stt = create_stt(on_partial=on_partial, on_final=on_final, on_commit=on_commit)
     audio_capture = AudioCapture()
-    recording = [False]
-    feed_thread = [None]
-    stop_event = threading.Event()
 
     def feed_loop():
         while not stop_event.is_set():
@@ -85,100 +82,68 @@ def main():
             if chunk is not None:
                 stt.feed_audio(chunk)
 
-    def save_wav(raw_audio: np.ndarray) -> Path:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = AUDIO_DIR / f"{ts}.wav"
-        with wave.open(str(path), "wb") as wf:
-            wf.setnchannels(config.channels)
-            wf.setsampwidth(2)
-            wf.setframerate(config.sample_rate)
-            pcm = (raw_audio * 32767).clip(-32768, 32767).astype(np.int16)
-            wf.writeframes(pcm.tobytes())
-        return path
-
-    def start_recording(mode):
-        if recording[0]:
+    def on_start(m):
+        nonlocal mode, recording, last_commit, feed_thread
+        if recording:
             return
-        recording[0] = True
-        current_mode[0] = mode
-        commit_history.clear()
+        recording = True
+        mode = m
+        last_commit = ""
         stt.reset()
         stop_event.clear()
         audio_capture.start()
-        feed_thread[0] = threading.Thread(target=feed_loop, daemon=True)
-        feed_thread[0].start()
-        mode_label = "smart (speaker-change commit)" if mode == "smart" else "manual (commit on stop)"
-        print(f"[recording:{mode}] Speak now...")
+        feed_thread = threading.Thread(target=feed_loop, daemon=True)
+        feed_thread.start()
+        print(f"[recording:{m}] Speak now...")
 
-    def stop_recording():
-        if not recording[0]:
+    def on_stop():
+        nonlocal recording, mode, feed_thread
+        if not recording:
             return
-        mode = current_mode[0]
-        recording[0] = False
+        m = mode
+        recording = False
         stop_event.set()
         audio_capture.stop()
-        if feed_thread[0]:
-            feed_thread[0].join(timeout=2)
+        if feed_thread:
+            feed_thread.join(timeout=2)
         for chunk in audio_capture.drain():
             stt.feed_audio(chunk)
 
         raw = audio_capture.get_raw_audio()
         if raw is not None and len(raw) > 0:
-            wav_path = save_wav(raw)
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            wav_path = AUDIO_DIR / f"{ts}.wav"
+            save_wav(raw, wav_path, config.sample_rate, config.channels)
             print(f"[saved] {wav_path}")
 
-        if mode == "manual":
-            # In manual mode, finalize commits everything as one block
-            stt._committed_audio_end = 0.0  # reset so finalize processes all
-            # Temporarily enable commit for finalize
-            current_mode[0] = "finalizing"
+        if m == "manual":
+            stt.prepare_finalize()
+            mode = "finalizing"
 
         stt.finalize()
-        current_mode[0] = None
+        mode = None
         print("[ready]")
 
-    # Smart mode callbacks
-    def on_activate():
-        start_recording("smart")
-
-    def on_deactivate():
-        stop_recording()
-
-    # Manual mode callbacks
-    def on_activate_manual():
-        start_recording("manual")
-
-    def on_deactivate_manual():
-        stop_recording()
-
-    hotkey = HotkeyListener(
-        on_activate=on_activate,
-        on_deactivate=on_deactivate,
-        on_activate_manual=on_activate_manual,
-        on_deactivate_manual=on_deactivate_manual,
-    )
+    hotkey = HotkeyListener(on_start=on_start, on_stop=on_stop)
 
     print("=== VoiceInput ===")
-    provider_info = config.stt_provider
     if config.stt_provider == "whisper_remote":
-        provider_info += f" ({config.whisper_remote_url})"
+        print(f"STT: whisper_remote ({config.whisper_remote_url})")
     else:
-        provider_info += f" ({config.whisper_model})"
-    print(f"STT: {provider_info}")
+        print(f"STT: whisper_local ({config.whisper_model})")
     print(f"Language: {config.primary_language or 'auto-detect'}")
     print()
 
     print("[stt] Loading...", end=" ", flush=True)
-    stt._ensure_model()
+    stt.warmup()
     print("done.")
     print()
     if check_accessibility():
-        print("Ctrl+Shift+R = smart mode (speaker-change auto-commit)")
-        print("Ctrl+Shift+E = manual mode (commit only on stop)")
+        print("Ctrl+Shift+R = smart | Ctrl+Shift+E = manual")
     else:
-        print("Enter = smart mode | type 'e'+Enter = manual mode")
-    print("Press Ctrl+C to exit.")
-    print()
+        print("Enter = smart | 'e'+Enter = manual")
+    print("Ctrl+C to exit.\n")
 
     signal.signal(signal.SIGINT, lambda *_: (print("\n[exit]"), sys.exit(0)))
     hotkey.start()

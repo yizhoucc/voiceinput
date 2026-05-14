@@ -15,8 +15,8 @@ class WhisperLocalSTT(STTProvider):
     OVERLAP_SECONDS = 3
     WINDOW_SECONDS = 12
 
-    def __init__(self, on_partial, on_final):
-        super().__init__(on_partial, on_final)
+    def __init__(self, on_partial, on_final, on_commit=None):
+        super().__init__(on_partial, on_final, on_commit)
         self._model: WhisperModel | None = None
         self._buffer = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
@@ -27,7 +27,7 @@ class WhisperLocalSTT(STTProvider):
         self._committed_text: list[str] = []
         self._last_partial = ""
 
-    def _ensure_model(self):
+    def warmup(self):
         if self._model is None:
             self._model = WhisperModel(
                 config.whisper_model,

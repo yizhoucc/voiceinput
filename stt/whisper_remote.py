@@ -1,74 +1,40 @@
-import io
 import threading
 import time
-import wave
 import numpy as np
 import httpx
 from stt.base import STTProvider
+from audio_utils import to_wav_bytes
 from config import config
 
 
 class WhisperRemoteSTT(STTProvider):
-    """Streaming STT. Simple and reliable.
+    """Streaming STT via 5090 GPU. Append-only commits.
 
-    - Always processes full window (15s) for quality
-    - on_partial: every 2s, show current transcription in terminal
-    - on_commit: triggered by (a) long pause detected or (b) finalize
-    - Committed text is inserted at cursor and never modified
+    Commit triggers: speaker change or manual stop (finalize).
     """
 
     WINDOW_SECONDS = 15
-    PAUSE_SECONDS = 5.0  # long pause triggers auto-commit (user prefers manual stop)
-    SPEAKER_CHANGE_COMMIT = True  # auto-commit when speaker changes
+    SPEAKER_CHANGE_COMMIT = True
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
-        self._buffer = np.array([], dtype=np.float32)
+        self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
         self._processing = False
         self._pending = False
-        self._total_samples = 0
         self._committed_audio_end = 0.0
-        self._last_committed_text = ""  # for overlap dedup
+        self._last_committed_text = ""
         self._client = httpx.Client(timeout=30.0)
 
-    def _dedup(self, text: str) -> str:
-        """Remove overlap/duplicates with last committed text."""
-        if not self._last_committed_text or not text:
-            self._last_committed_text = text
-            return text
-        # Skip if exact same as last commit
-        if text.strip() == self._last_committed_text.strip():
-            return ""
-        # Check if text starts with the tail of last commit
-        tail = self._last_committed_text
-        for overlap_len in range(min(len(tail), len(text)), 2, -1):
-            if text[:overlap_len] == tail[-overlap_len:]:
-                text = text[overlap_len:].strip()
-                break
-        self._last_committed_text = text
-        return text
-
-    def _ensure_model(self):
-        pass
-
-    def _to_wav(self, audio):
-        buf = io.BytesIO()
-        with wave.open(buf, "wb") as wf:
-            wf.setnchannels(1)
-            wf.setsampwidth(2)
-            wf.setframerate(config.sample_rate)
-            pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16)
-            wf.writeframes(pcm.tobytes())
-        return buf.getvalue()
+    def prepare_finalize(self):
+        self._committed_audio_end = 0.0
 
     def feed_audio(self, audio: np.ndarray):
         flat = audio.flatten()
         with self._lock:
-            self._buffer = np.concatenate([self._buffer, flat])
-            self._total_samples += len(flat)
+            self._chunks.append(flat)
 
         now = time.monotonic()
         if now - self._last_process_time >= self._step_seconds:
@@ -81,15 +47,54 @@ class WhisperRemoteSTT(STTProvider):
     def finalize(self):
         self._process(is_final=True)
 
-    def _transcribe_range(self, start_sample, end_sample):
-        """Transcribe a specific range of the buffer."""
+    def _get_buffer(self):
         with self._lock:
-            audio = self._buffer[start_sample:end_sample].copy()
-        if len(audio) < config.sample_rate * 0.3:
+            if not self._chunks:
+                return np.array([], dtype=np.float32)
+            buf = np.concatenate(self._chunks)
+            # Trim for memory: keep last 30s
+            max_s = int(30 * config.sample_rate)
+            if len(buf) > max_s:
+                buf = buf[-max_s:]
+                self._chunks = [buf]
+            return buf
+
+    def _dedup(self, text: str) -> str:
+        if not self._last_committed_text or not text:
+            self._last_committed_text = text
+            return text
+        if text.strip() == self._last_committed_text.strip():
             return ""
+        tail = self._last_committed_text
+        for overlap_len in range(min(len(tail), len(text)), 2, -1):
+            if text[:overlap_len] == tail[-overlap_len:]:
+                text = text[overlap_len:].strip()
+                break
+        self._last_committed_text = text
+        return text
+
+    @staticmethod
+    def _format_segments(segments):
+        parts = []
+        speakers = []
+        for seg in segments:
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            speaker = seg.get("speaker", "unknown")
+            speakers.append(speaker)
+            if speaker == "me":
+                parts.append(f"[我] {text}")
+            elif speaker == "other":
+                parts.append(f"[他] {text}")
+            else:
+                parts.append(text)
+        return parts, speakers
+
+    def _transcribe(self, audio_data):
         resp = self._client.post(
             f"{config.whisper_remote_url}/transcribe",
-            files={"audio": ("c.wav", self._to_wav(audio), "audio/wav")},
+            files={"audio": ("c.wav", to_wav_bytes(audio_data, config.sample_rate), "audio/wav")},
             data={
                 "language": config.primary_language or "auto",
                 "initial_prompt": config.whisper_prompt,
@@ -97,20 +102,7 @@ class WhisperRemoteSTT(STTProvider):
             },
         )
         resp.raise_for_status()
-        segments = resp.json().get("segments", [])
-        parts = []
-        for seg in segments:
-            text = seg.get("text", "").strip()
-            if not text:
-                continue
-            speaker = seg.get("speaker", "unknown")
-            if speaker == "me":
-                parts.append(f"[我] {text}")
-            elif speaker == "other":
-                parts.append(f"[他] {text}")
-            else:
-                parts.append(text)
-        return " ".join(parts)
+        return resp.json().get("segments", [])
 
     def _process(self, is_final):
         if self._processing and not is_final:
@@ -118,61 +110,26 @@ class WhisperRemoteSTT(STTProvider):
         self._processing = True
 
         try:
-            with self._lock:
-                buf_len = len(self._buffer)
-                total_time = self._total_samples / config.sample_rate
-
+            buf = self._get_buffer()
+            buf_len = len(buf)
             if buf_len < config.sample_rate * 0.5:
                 return
 
-            # Determine what to transcribe: from committed point (with 1s overlap for context)
             committed_samples = int(self._committed_audio_end * config.sample_rate)
             overlap_samples = int(1.0 * config.sample_rate)
-            uncommitted_start = max(0, committed_samples - overlap_samples)
-            audio_chunk = None
-            with self._lock:
-                audio_chunk = self._buffer[uncommitted_start:buf_len].copy()
+            start = max(0, committed_samples - overlap_samples)
+            audio_chunk = buf[start:buf_len]
 
             if len(audio_chunk) < config.sample_rate * 0.3:
                 return
 
-            # Transcribe
-            resp = self._client.post(
-                f"{config.whisper_remote_url}/transcribe",
-                files={"audio": ("c.wav", self._to_wav(audio_chunk), "audio/wav")},
-                data={
-                    "language": config.primary_language or "auto",
-                    "initial_prompt": config.whisper_prompt,
-                    "identify_speaker": "true",
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            segments = data.get("segments", [])
-
+            segments = self._transcribe(audio_chunk)
             if not segments:
                 return
 
-            # Build text and detect speaker changes
-            parts = []
-            last_seg_end = 0
-            speakers_in_order = []
-            for seg in segments:
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                speaker = seg.get("speaker", "unknown")
-                speakers_in_order.append(speaker)
-                if speaker == "me":
-                    parts.append(f"[我] {text}")
-                elif speaker == "other":
-                    parts.append(f"[他] {text}")
-                else:
-                    parts.append(text)
-                last_seg_end = seg.get("end", 0)
-
+            parts, speakers = self._format_segments(segments)
             full_text = " ".join(parts)
-            audio_dur = len(audio_chunk) / config.sample_rate
+            last_seg_end = segments[-1].get("end", 0) if segments else 0
 
             if is_final:
                 deduped = self._dedup(full_text)
@@ -181,46 +138,24 @@ class WhisperRemoteSTT(STTProvider):
                 self.on_final(deduped)
                 return
 
-            # Show partial in terminal
             self.on_partial(full_text)
 
-            # Check for speaker change: if multiple speakers, commit before the switch
-            speaker_changed = False
-            if self.SPEAKER_CHANGE_COMMIT and len(speakers_in_order) >= 2:
-                unique = set(s for s in speakers_in_order if s != "unknown")
+            # Speaker change commit
+            if self.SPEAKER_CHANGE_COMMIT and len(speakers) >= 2:
+                unique = set(s for s in speakers if s != "unknown")
                 if len(unique) >= 2:
-                    # Find the split point: commit segments before speaker change
-                    first_speaker = speakers_in_order[0]
-                    split_idx = None
-                    for idx, spk in enumerate(speakers_in_order[1:], 1):
+                    first_speaker = speakers[0]
+                    for idx, spk in enumerate(speakers[1:], 1):
                         if spk != first_speaker and spk != "unknown":
-                            split_idx = idx
+                            before = " ".join(parts[:idx])
+                            deduped = self._dedup(before)
+                            if deduped.strip():
+                                self.on_commit(deduped)
+                                committed_segs = [s for s in segments if s.get("text", "").strip()][:idx]
+                                if committed_segs:
+                                    seg_end = committed_segs[-1].get("end", 0)
+                                    self._committed_audio_end = (start / config.sample_rate) + seg_end
                             break
-                    if split_idx is not None:
-                        before = " ".join(parts[:split_idx])
-                        deduped = self._dedup(before)
-                        if deduped.strip():
-                            self.on_commit(deduped)
-                            speaker_changed = True
-                            # Find the end time of the last committed segment
-                            committed_segs = [s for s in segments if s.get("text", "").strip()][:split_idx]
-                            if committed_segs:
-                                seg_end = committed_segs[-1].get("end", 0)
-                                actual_end = (uncommitted_start / config.sample_rate) + seg_end
-                                with self._lock:
-                                    self._committed_audio_end = actual_end
-
-            # No auto-pause commit. Only speaker change or manual stop.
-            if False:
-                # Long pause detected → auto-commit
-                deduped = self._dedup(full_text)
-                if deduped.strip():
-                    self.on_commit(deduped)
-                # Set committed end to where whisper actually transcribed to
-                # (uncommitted_start/sr + last_seg_end), not total_time
-                actual_end = (uncommitted_start / config.sample_rate) + last_seg_end
-                with self._lock:
-                    self._committed_audio_end = actual_end
 
         except Exception as e:
             print(f"\n[stt-remote] Error: {e}")
@@ -233,8 +168,7 @@ class WhisperRemoteSTT(STTProvider):
 
     def reset(self):
         with self._lock:
-            self._buffer = np.array([], dtype=np.float32)
-            self._total_samples = 0
+            self._chunks.clear()
         self._committed_audio_end = 0.0
         self._last_process_time = 0.0
         self._pending = False
