@@ -18,7 +18,8 @@ class WhisperRemoteSTT(STTProvider):
     """
 
     WINDOW_SECONDS = 15
-    PAUSE_SECONDS = 2.0  # silence this long triggers auto-commit
+    PAUSE_SECONDS = 5.0  # long pause triggers auto-commit (user prefers manual stop)
+    SPEAKER_CHANGE_COMMIT = True  # auto-commit when speaker changes
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
@@ -152,14 +153,16 @@ class WhisperRemoteSTT(STTProvider):
             if not segments:
                 return
 
-            # Build text
+            # Build text and detect speaker changes
             parts = []
             last_seg_end = 0
+            speakers_in_order = []
             for seg in segments:
                 text = seg.get("text", "").strip()
                 if not text:
                     continue
                 speaker = seg.get("speaker", "unknown")
+                speakers_in_order.append(speaker)
                 if speaker == "me":
                     parts.append(f"[我] {text}")
                 elif speaker == "other":
@@ -181,9 +184,35 @@ class WhisperRemoteSTT(STTProvider):
             # Show partial in terminal
             self.on_partial(full_text)
 
+            # Check for speaker change: if multiple speakers, commit before the switch
+            speaker_changed = False
+            if self.SPEAKER_CHANGE_COMMIT and len(speakers_in_order) >= 2:
+                unique = set(s for s in speakers_in_order if s != "unknown")
+                if len(unique) >= 2:
+                    # Find the split point: commit segments before speaker change
+                    first_speaker = speakers_in_order[0]
+                    split_idx = None
+                    for idx, spk in enumerate(speakers_in_order[1:], 1):
+                        if spk != first_speaker and spk != "unknown":
+                            split_idx = idx
+                            break
+                    if split_idx is not None:
+                        before = " ".join(parts[:split_idx])
+                        deduped = self._dedup(before)
+                        if deduped.strip():
+                            self.on_commit(deduped)
+                            speaker_changed = True
+                            # Find the end time of the last committed segment
+                            committed_segs = [s for s in segments if s.get("text", "").strip()][:split_idx]
+                            if committed_segs:
+                                seg_end = committed_segs[-1].get("end", 0)
+                                actual_end = (uncommitted_start / config.sample_rate) + seg_end
+                                with self._lock:
+                                    self._committed_audio_end = actual_end
+
             # Check for pause: if last segment ends >PAUSE_SECONDS before audio end
             silence_at_end = audio_dur - last_seg_end
-            if silence_at_end > self.PAUSE_SECONDS and full_text.strip():
+            if not speaker_changed and silence_at_end > self.PAUSE_SECONDS and full_text.strip():
                 # Long pause detected → auto-commit
                 deduped = self._dedup(full_text)
                 if deduped.strip():
