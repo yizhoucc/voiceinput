@@ -10,7 +10,7 @@ sys.stdout.reconfigure(line_buffering=True)
 import numpy as np
 from audio import AudioCapture
 from output.terminal import TerminalOutput
-from hotkey import HotkeyListener
+from hotkey import HotkeyListener, check_accessibility
 from config import config
 
 
@@ -57,7 +57,7 @@ def main():
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
         feed_thread.start()
-        print("[recording] Speak now... (press Enter to stop)")
+        print("[recording] Speak now... (Ctrl+Option+1 or Enter to stop)")
 
     def save_wav(raw_audio: np.ndarray) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -88,7 +88,7 @@ def main():
             print(f"[saved] {wav_path}")
 
         stt.finalize()
-        print("[ready] Press Enter to record")
+        print("[ready] Ctrl+Option+1 or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
@@ -106,7 +106,10 @@ def main():
     stt._ensure_model()
     print("done.")
     print()
-    print("Press Enter to start recording, Enter again to stop.")
+    if check_accessibility():
+        print("Hotkey: Ctrl+Option+1 to toggle recording (global)")
+    else:
+        print("Hotkey: Enter to toggle (grant Accessibility for Ctrl+Option+1)")
     print("Press Ctrl+C to exit.")
     print()
 
