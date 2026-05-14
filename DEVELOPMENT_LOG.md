@@ -276,6 +276,6 @@ Qwen2-Audio-7B 的音频理解能力存在，但不适合当前管道：
 Audio LLM 方向正确，但需要等更成熟的模型（如 Qwen2.5-Omni 或专门的 ASR 纠错模型）。
 
 ### 后续方向
-1. 浮动窗口显示 partial（不依赖编辑器）
-2. Apple Speech 后端（真正逐词流式）
-3. 等待更好的 Audio LLM 用于谐音修正
+1. 浮动窗口显示 partial（不依赖编辑器文字修改）
+2. Apple Speech 后端（macOS SFSpeechRecognizer，真正逐词流式，延迟 <500ms）
+3. 等待更成熟的 Audio LLM 用于谐音修正（Qwen2.5-Omni 等）
