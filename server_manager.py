@@ -5,11 +5,25 @@ import httpx
 
 
 def ssh_run(cmd: str, timeout: int = 10) -> str:
-    r = subprocess.run(
-        ["ssh", "wsl", cmd],
-        capture_output=True, text=True, timeout=timeout
-    )
-    return r.stdout.strip()
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=3", "wsl", cmd],
+            capture_output=True, text=True, timeout=timeout
+        )
+        return r.stdout.strip()
+    except (subprocess.TimeoutExpired, Exception):
+        return ""
+
+
+def check_ssh_reachable() -> bool:
+    try:
+        r = subprocess.run(
+            ["ssh", "-o", "ConnectTimeout=3", "wsl", "echo ok"],
+            capture_output=True, text=True, timeout=5
+        )
+        return r.stdout.strip() == "ok"
+    except Exception:
+        return False
 
 
 def ensure_ssh_tunnel(local_port: int) -> bool:
@@ -108,8 +122,13 @@ def ensure_servers(need_llm: bool = False, llm_model: str = "Qwen/Qwen3-8B",
                    quantize: bool = True):
     """Ensure all required servers are running. Auto-start/restart as needed."""
 
+    # 0. Check SSH reachable
+    print("[server] Checking 5090 connectivity...", flush=True)
+    if not check_ssh_reachable():
+        print("[server] 5090 not reachable via SSH.", flush=True)
+        return False
+
     # 1. SSH tunnels
-    print("[server] Checking SSH tunnels...", flush=True)
     if not ensure_ssh_tunnel(8787):
         print("[server] Failed to create whisper tunnel (port 8787)")
         return False

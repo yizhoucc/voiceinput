@@ -52,7 +52,7 @@ def main():
     if args.no_quantize:
         config.quantize = False
 
-    # Auto-manage remote servers (if not local mode)
+    # Auto-manage remote servers, fallback to local if unavailable
     if config.stt_provider == "whisper_remote":
         from server_manager import ensure_servers
         if not ensure_servers(
@@ -60,8 +60,9 @@ def main():
             llm_model=config.vllm_model,
             quantize=config.quantize,
         ):
-            print("[error] Failed to start remote servers. Use --local for Mac-only mode.")
-            sys.exit(1)
+            print("[WARNING] 5090 not reachable. Falling back to local Mac mode.")
+            config.stt_provider = "whisper_local"
+            config.llm_polish_enabled = False
 
     output = TerminalOutput()
     inserter = SystemTextInserter()
