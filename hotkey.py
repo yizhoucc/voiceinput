@@ -43,15 +43,34 @@ class HotkeyListener:
     def _start_pynput(self):
         from pynput import keyboard
 
-        self._listener = keyboard.Listener(on_press=self._on_press)
+        self._pressed = set()
+        self._listener = keyboard.Listener(
+            on_press=self._on_press,
+            on_release=self._on_release,
+        )
         self._listener.daemon = True
         self._listener.start()
-        print("[hotkey] Listening for F5 (global toggle)")
+        print("[hotkey] Listening for Ctrl+Shift+R (global toggle)")
 
     def _on_press(self, key):
         from pynput import keyboard
-        if key == keyboard.Key.f5:
-            threading.Thread(target=self._toggle, daemon=True).start()
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self._pressed.add("ctrl")
+        elif key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self._pressed.add("shift")
+        elif hasattr(key, "char") and key.char == "\x12":  # Ctrl+Shift+R sends 0x12
+            if "ctrl" in self._pressed and "shift" in self._pressed:
+                threading.Thread(target=self._toggle, daemon=True).start()
+        elif hasattr(key, "vk") and key.vk == 15:  # 'r' key vk code
+            if "ctrl" in self._pressed and "shift" in self._pressed:
+                threading.Thread(target=self._toggle, daemon=True).start()
+
+    def _on_release(self, key):
+        from pynput import keyboard
+        if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            self._pressed.discard("ctrl")
+        elif key in (keyboard.Key.shift, keyboard.Key.shift_l, keyboard.Key.shift_r):
+            self._pressed.discard("shift")
 
     def _start_terminal(self):
         t = threading.Thread(target=self._terminal_loop, daemon=True)

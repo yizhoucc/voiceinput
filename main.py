@@ -63,7 +63,7 @@ def main():
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
         feed_thread.start()
-        print("[recording] Speak now... (F5 or Enter to stop)")
+        print("[recording] Speak now... (Ctrl+Shift+R or Enter to stop)")
 
     def save_wav(raw_audio: np.ndarray) -> Path:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -96,7 +96,7 @@ def main():
         stt.finalize()
         # Don't reset inserter here — let the final text be inserted first
         # Reset happens in on_activate before next recording
-        print("[ready] F5 or Enter to record")
+        print("[ready] Ctrl+Shift+R or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
@@ -115,9 +115,9 @@ def main():
     print("done.")
     print()
     if check_accessibility():
-        print("Hotkey: F5 to toggle recording (global)")
+        print("Hotkey: Ctrl+Shift+R to toggle recording (global)")
     else:
-        print("Hotkey: Enter to toggle (grant Accessibility for F5 global)")
+        print("Hotkey: Enter to toggle (grant Accessibility for Ctrl+Shift+R global)")
     print("Text will be inserted at cursor position in any app.")
     print("Press Ctrl+C to exit.")
     print()

@@ -19,13 +19,14 @@ class WhisperRemoteSTT(STTProvider):
     OVERLAP_SECONDS = 2
     WINDOW_SECONDS = 10
     STABLE_ZONE_SECONDS = 1.5  # segments older than this get committed
-    PAUSE_COMMIT_SECONDS = 0.3  # short pause triggers commit
-    FORCE_COMMIT_SECONDS = 3.0  # force commit if nothing committed for this long
+    PAUSE_COMMIT_SECONDS = 0.1  # very short pause triggers commit
+    FORCE_COMMIT_SECONDS = 1.5  # force commit if nothing committed for this long
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
         self._buffer = np.array([], dtype=np.float32)
         self._last_commit_time = 0.0
+        self._last_speaker = None  # track last committed speaker for tag dedup
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
@@ -108,10 +109,16 @@ class WhisperRemoteSTT(STTProvider):
                     self.on_final(" ".join(self._committed_text))
                 return
 
-            def fmt_seg(seg):
-                """Format segment with speaker tag."""
+            def fmt_seg(seg, for_commit=False):
+                """Format segment. Only add speaker tag when speaker changes."""
                 text = seg.get("text", "").strip()
                 speaker = seg.get("speaker", "unknown")
+
+                if for_commit and speaker == self._last_speaker:
+                    return text
+                if for_commit:
+                    self._last_speaker = speaker
+
                 if speaker == "me":
                     return f"[我] {text}"
                 elif speaker == "other":
@@ -119,11 +126,14 @@ class WhisperRemoteSTT(STTProvider):
                 return text
 
             if is_final:
-                all_text = [fmt_seg(s) for s in segments if s.get("text", "").strip()]
-                # Commit remaining segments to editor
-                for at in all_text:
-                    self.on_commit(at)
-                final = " ".join(self._committed_text + all_text)
+                # Commit remaining segments to editor (with speaker dedup)
+                all_committed = []
+                for s in segments:
+                    if s.get("text", "").strip():
+                        ct = fmt_seg(s, for_commit=True)
+                        self.on_commit(ct)
+                        all_committed.append(ct)
+                final = " ".join(self._committed_text + all_committed)
                 self.on_final(final)
                 return
 
@@ -152,20 +162,17 @@ class WhisperRemoteSTT(STTProvider):
                 if not text:
                     continue
                 seg_end = seg.get("end", 0)
-                formatted = fmt_seg(seg)
 
                 is_last = (i == len(segments) - 1)
-
-                # Commit if: stable zone, pause gap, or force
-                # Force: commit all but keep last segment as partial (unless it's the only one)
                 force_this = force_commit and (not is_last or len(segments) == 1)
+
                 if (seg_end < stable_cutoff
                         or (pause_split is not None and i < pause_split)
                         or force_this):
-                    commit_texts.append(formatted)
+                    commit_texts.append(fmt_seg(seg, for_commit=True))
                     last_committed_end = seg_end
                 else:
-                    partial_texts.append(formatted)
+                    partial_texts.append(fmt_seg(seg))
 
             # Trim buffer only up to the last committed segment's end time
             if commit_texts and last_committed_end > 0:
@@ -195,3 +202,4 @@ class WhisperRemoteSTT(STTProvider):
         self._buffer_offset = 0
         self._last_process_time = 0.0
         self._last_commit_time = time.monotonic()
+        self._last_speaker = None
