@@ -33,12 +33,13 @@ def main():
 
     def on_partial(text: str):
         output.show_partial(text)
+        inserter.update_partial(text)
 
     def on_final(text: str):
         output.show_final(text)
 
     def on_commit(text: str):
-        inserter.append(text + " ")
+        inserter.commit(text)
 
     stt = create_stt(on_partial=on_partial, on_final=on_final, on_commit=on_commit)
     audio = AudioCapture()
