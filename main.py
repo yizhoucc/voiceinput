@@ -33,11 +33,10 @@ def main():
 
     def on_partial(text: str):
         output.show_partial(text)
-        inserter.replace_last(text)
 
     def on_final(text: str):
         output.show_final(text)
-        inserter.replace_last(text)
+        inserter.insert(text)
 
     stt = create_stt(on_partial=on_partial, on_final=on_final)
     audio = AudioCapture()
@@ -57,7 +56,6 @@ def main():
             return
         recording = True
         stt.reset()
-        inserter.reset()
         stop_event.clear()
         audio.start()
         feed_thread = threading.Thread(target=feed_loop, daemon=True)
@@ -93,7 +91,6 @@ def main():
             print(f"[saved] {wav_path}")
 
         stt.finalize()
-        inserter.reset()
         print("[ready] F5 or Enter to record")
 
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
