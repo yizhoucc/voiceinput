@@ -15,13 +15,13 @@ from hotkey import HotkeyListener, check_accessibility
 from config import config
 
 
-def create_stt(on_partial, on_final):
+def create_stt(on_partial, on_final, on_commit=None):
     if config.stt_provider == "whisper_remote":
         from stt.whisper_remote import WhisperRemoteSTT
-        return WhisperRemoteSTT(on_partial, on_final)
+        return WhisperRemoteSTT(on_partial, on_final, on_commit)
     else:
         from stt.whisper_local import WhisperLocalSTT
-        return WhisperLocalSTT(on_partial, on_final)
+        return WhisperLocalSTT(on_partial, on_final, on_commit)
 
 AUDIO_DIR = Path("recordings")
 AUDIO_DIR.mkdir(exist_ok=True)
@@ -33,13 +33,14 @@ def main():
 
     def on_partial(text: str):
         output.show_partial(text)
-        inserter.replace_last(text)
 
     def on_final(text: str):
         output.show_final(text)
-        inserter.replace_last(text)
 
-    stt = create_stt(on_partial=on_partial, on_final=on_final)
+    def on_commit(text: str):
+        inserter.append(text + " ")
+
+    stt = create_stt(on_partial=on_partial, on_final=on_final, on_commit=on_commit)
     audio = AudioCapture()
     recording = False
     feed_thread: threading.Thread | None = None

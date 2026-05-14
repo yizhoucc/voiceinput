@@ -21,8 +21,8 @@ class WhisperRemoteSTT(STTProvider):
     STABLE_ZONE_SECONDS = 3  # segments older than this within window get committed
     PAUSE_COMMIT_SECONDS = 1.0  # silence gap to trigger commit
 
-    def __init__(self, on_partial, on_final):
-        super().__init__(on_partial, on_final)
+    def __init__(self, on_partial, on_final, on_commit=None):
+        super().__init__(on_partial, on_final, on_commit)
         self._buffer = np.array([], dtype=np.float32)
         self._lock = threading.Lock()
         self._last_process_time = 0.0
@@ -118,8 +118,10 @@ class WhisperRemoteSTT(STTProvider):
 
             if is_final:
                 all_text = [fmt_seg(s) for s in segments if s.get("text", "").strip()]
+                # Commit remaining segments to editor
+                for at in all_text:
+                    self.on_commit(at)
                 final = " ".join(self._committed_text + all_text)
-                print(f"\n[debug] committed={len(self._committed_text)} segs, new={len(all_text)} segs, final={len(final)} chars")
                 self.on_final(final)
                 return
 
@@ -156,6 +158,9 @@ class WhisperRemoteSTT(STTProvider):
             # Trim buffer only up to the last committed segment's end time
             # (not stable_cutoff, which might cut into uncommitted audio)
             if commit_texts and last_committed_end > 0:
+                # Notify each new committed segment for editor insertion
+                for ct in commit_texts:
+                    self.on_commit(ct)
                 self._committed_text.extend(commit_texts)
                 trim_samples = int(last_committed_end * config.sample_rate)
                 actual_trim = window_start_in_buf + trim_samples
