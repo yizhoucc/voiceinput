@@ -52,6 +52,17 @@ def main():
     if args.no_quantize:
         config.quantize = False
 
+    # Auto-manage remote servers (if not local mode)
+    if config.stt_provider == "whisper_remote":
+        from server_manager import ensure_servers
+        if not ensure_servers(
+            need_llm=config.llm_polish_enabled,
+            llm_model=config.vllm_model,
+            quantize=config.quantize,
+        ):
+            print("[error] Failed to start remote servers. Use --local for Mac-only mode.")
+            sys.exit(1)
+
     output = TerminalOutput()
     inserter = SystemTextInserter()
 
@@ -60,7 +71,7 @@ def main():
         try:
             from llm.vllm_remote import VLLMPolisher
             polisher = VLLMPolisher()
-            print("[llm] Polish enabled via vLLM")
+            print("[llm] Polish enabled")
         except Exception as e:
             print(f"[llm] Polish disabled: {e}")
 
