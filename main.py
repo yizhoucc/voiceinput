@@ -68,6 +68,8 @@ def main():
         if current_mode[0] == "manual":
             return
         polished = polish_text(text)
+        if polished != text:
+            print(f"\n[polish] {text[:30]}... → {polished[:30]}...")
         inserter.paste(polished + " ")
         commit_history.append(polished)
 
