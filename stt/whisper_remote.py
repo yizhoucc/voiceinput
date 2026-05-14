@@ -119,6 +119,7 @@ class WhisperRemoteSTT(STTProvider):
             if is_final:
                 all_text = [fmt_seg(s) for s in segments if s.get("text", "").strip()]
                 final = " ".join(self._committed_text + all_text)
+                print(f"\n[debug] committed={len(self._committed_text)} segs, new={len(all_text)} segs, final={len(final)} chars")
                 self.on_final(final)
                 return
 

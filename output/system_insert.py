@@ -47,7 +47,10 @@ class SystemTextInserter:
 
             try:
                 if self._has_inserted and self._last_char_count > 0:
+                    print(f"\n[insert] select back {self._last_char_count} chars, paste {len(latest)} chars")
                     self._select_back(self._last_char_count)
+                else:
+                    print(f"\n[insert] first paste {len(latest)} chars")
                 self._paste(latest)
                 self._has_inserted = True
                 self._last_char_count = len(latest)
