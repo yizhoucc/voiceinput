@@ -66,6 +66,7 @@ class WhisperRemoteSTT(STTProvider):
             data={
                 "language": lang,
                 "initial_prompt": config.whisper_prompt,
+                "identify_speaker": "true",
             },
         )
         response.raise_for_status()
@@ -105,9 +106,18 @@ class WhisperRemoteSTT(STTProvider):
                     self.on_final(" ".join(self._committed_text))
                 return
 
+            def fmt_seg(seg):
+                """Format segment with speaker tag."""
+                text = seg.get("text", "").strip()
+                speaker = seg.get("speaker", "unknown")
+                if speaker == "me":
+                    return f"[我] {text}"
+                elif speaker == "other":
+                    return f"[他] {text}"
+                return text
+
             if is_final:
-                # Commit everything
-                all_text = [s["text"] for s in segments if s.get("text", "").strip()]
+                all_text = [fmt_seg(s) for s in segments if s.get("text", "").strip()]
                 final = " ".join(self._committed_text + all_text)
                 self.on_final(final)
                 return
@@ -116,47 +126,33 @@ class WhisperRemoteSTT(STTProvider):
             stable_cutoff = audio_duration - self.STABLE_ZONE_SECONDS
             commit_texts = []
             partial_texts = []
-            last_end = 0.0
 
-            for seg in segments:
+            # Check for pause-based commit: find the last big gap
+            pause_split = None
+            if len(segments) >= 2:
+                for i in range(len(segments) - 1, 0, -1):
+                    prev_end = segments[i - 1].get("end", 0)
+                    curr_start = segments[i].get("start", 0)
+                    if curr_start - prev_end > self.PAUSE_COMMIT_SECONDS:
+                        pause_split = i
+                        break
+
+            for i, seg in enumerate(segments):
                 text = seg.get("text", "").strip()
                 if not text:
                     continue
                 seg_end = seg.get("end", 0)
-                seg_start = seg.get("start", 0)
+                formatted = fmt_seg(seg)
 
-                # Pause-based commit: if gap > threshold before this segment
-                if seg_start - last_end > self.PAUSE_COMMIT_SECONDS and commit_texts:
-                    # Commit everything before this gap
-                    pass  # already in commit_texts
-
-                if seg_end < stable_cutoff:
-                    commit_texts.append(text)
+                # Commit if: in stable zone OR before a pause gap
+                if seg_end < stable_cutoff or (pause_split is not None and i < pause_split):
+                    commit_texts.append(formatted)
                 else:
-                    partial_texts.append(text)
-
-                last_end = seg_end
-
-            # Also check for pause-based commit within partial zone
-            # If there's a big gap, commit everything before the gap
-            if len(segments) >= 2:
-                for i in range(1, len(segments)):
-                    prev_end = segments[i - 1].get("end", 0)
-                    curr_start = segments[i].get("start", 0)
-                    if curr_start - prev_end > self.PAUSE_COMMIT_SECONDS:
-                        # Move segments before the gap to commit
-                        gap_segments_before = segments[:i]
-                        gap_segments_after = segments[i:]
-                        before_texts = [s["text"].strip() for s in gap_segments_before if s.get("text", "").strip()]
-                        after_texts = [s["text"].strip() for s in gap_segments_after if s.get("text", "").strip()]
-                        if before_texts:
-                            commit_texts = before_texts
-                            partial_texts = after_texts
+                    partial_texts.append(formatted)
 
             # Commit stable text and trim buffer
             if commit_texts:
                 self._committed_text.extend(commit_texts)
-                # Trim buffer: keep from stable_cutoff onwards
                 trim_samples = int(stable_cutoff * config.sample_rate)
                 actual_trim = window_start_in_buf + trim_samples
                 with self._lock:
@@ -164,7 +160,6 @@ class WhisperRemoteSTT(STTProvider):
                         self._buffer = self._buffer[actual_trim:]
                         self._buffer_offset += actual_trim
 
-            # Display
             display = " ".join(self._committed_text + partial_texts)
             self.on_partial(display)
 
