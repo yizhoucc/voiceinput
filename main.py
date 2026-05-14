@@ -16,11 +16,10 @@ from config import config
 
 def parse_args():
     parser = argparse.ArgumentParser(description="VoiceInput: streaming voice input tool")
-    parser.add_argument("--llm", action="store_true", help="Enable LLM polish (uses ~15GB extra VRAM)")
-    parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090 needed)")
+    parser.add_argument("--llm", nargs="?", const="default", default=None,
+                        help="Enable LLM polish. Optionally specify model name (e.g. --llm Qwen/Qwen3-8B)")
+    parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090)")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
-    parser.add_argument("--model", type=str, default=None, help="Whisper model (HuggingFace name, e.g. large-v3-turbo, small, base)")
-    parser.add_argument("--llm-model", type=str, default=None, help="LLM model for polish (HuggingFace name, e.g. Qwen/Qwen3-8B)")
     return parser.parse_args()
 
 
@@ -42,13 +41,12 @@ def main():
 
     if args.local:
         config.stt_provider = "whisper_local"
-    config.llm_polish_enabled = args.llm
+    if args.llm:
+        config.llm_polish_enabled = True
+        if args.llm != "default":
+            config.vllm_model = args.llm
     if args.language:
         config.primary_language = None if args.language == "auto" else args.language
-    if args.model:
-        config.whisper_model = args.model
-    if args.llm_model:
-        config.vllm_model = args.llm_model
 
     output = TerminalOutput()
     inserter = SystemTextInserter()
