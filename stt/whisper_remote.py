@@ -16,14 +16,16 @@ class WhisperRemoteSTT(STTProvider):
     Additionally, a pause > 1s between segments triggers commit.
     """
 
-    OVERLAP_SECONDS = 3
-    WINDOW_SECONDS = 12
-    STABLE_ZONE_SECONDS = 3  # segments older than this within window get committed
-    PAUSE_COMMIT_SECONDS = 1.0  # silence gap to trigger commit
+    OVERLAP_SECONDS = 2
+    WINDOW_SECONDS = 10
+    STABLE_ZONE_SECONDS = 1.5  # segments older than this get committed
+    PAUSE_COMMIT_SECONDS = 0.3  # short pause triggers commit
+    FORCE_COMMIT_SECONDS = 3.0  # force commit if nothing committed for this long
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
         self._buffer = np.array([], dtype=np.float32)
+        self._last_commit_time = 0.0
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
@@ -130,7 +132,7 @@ class WhisperRemoteSTT(STTProvider):
             commit_texts = []
             partial_texts = []
 
-            # Check for pause-based commit: find the last big gap
+            # Check for pause-based commit: find any gap > threshold
             pause_split = None
             if len(segments) >= 2:
                 for i in range(len(segments) - 1, 0, -1):
@@ -140,6 +142,10 @@ class WhisperRemoteSTT(STTProvider):
                         pause_split = i
                         break
 
+            # Force commit: if no commit for too long, commit everything
+            now = time.monotonic()
+            force_commit = (now - self._last_commit_time > self.FORCE_COMMIT_SECONDS)
+
             last_committed_end = 0.0
             for i, seg in enumerate(segments):
                 text = seg.get("text", "").strip()
@@ -148,20 +154,25 @@ class WhisperRemoteSTT(STTProvider):
                 seg_end = seg.get("end", 0)
                 formatted = fmt_seg(seg)
 
-                # Commit if: in stable zone OR before a pause gap
-                if seg_end < stable_cutoff or (pause_split is not None and i < pause_split):
+                is_last = (i == len(segments) - 1)
+
+                # Commit if: stable zone, pause gap, or force
+                # Force: commit all but keep last segment as partial (unless it's the only one)
+                force_this = force_commit and (not is_last or len(segments) == 1)
+                if (seg_end < stable_cutoff
+                        or (pause_split is not None and i < pause_split)
+                        or force_this):
                     commit_texts.append(formatted)
                     last_committed_end = seg_end
                 else:
                     partial_texts.append(formatted)
 
             # Trim buffer only up to the last committed segment's end time
-            # (not stable_cutoff, which might cut into uncommitted audio)
             if commit_texts and last_committed_end > 0:
-                # Notify each new committed segment for editor insertion
                 for ct in commit_texts:
                     self.on_commit(ct)
                 self._committed_text.extend(commit_texts)
+                self._last_commit_time = now
                 trim_samples = int(last_committed_end * config.sample_rate)
                 actual_trim = window_start_in_buf + trim_samples
                 with self._lock:
@@ -183,3 +194,4 @@ class WhisperRemoteSTT(STTProvider):
         self._committed_text.clear()
         self._buffer_offset = 0
         self._last_process_time = 0.0
+        self._last_commit_time = time.monotonic()
