@@ -113,9 +113,11 @@ class WhisperRemoteSTT(STTProvider):
             else:
                 # Check if partial text stabilized (same as last time)
                 if new_text == self._last_partial and new_text:
-                    # Text stabilized → commit it
+                    # Text stabilized → commit and trim buffer
                     self._committed_text.append(new_text)
                     with self._lock:
+                        keep_from = max(0, len(self._buffer) - int(self.OVERLAP_SECONDS * config.sample_rate))
+                        self._buffer = self._buffer[keep_from:]
                         self._committed_samples = len(self._buffer)
                     self._last_partial = ""
 
