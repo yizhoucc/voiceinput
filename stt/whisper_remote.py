@@ -106,9 +106,9 @@ class WhisperRemoteSTT(STTProvider):
             if buf_len < config.sample_rate * 0.5:
                 return
 
-            # Determine what to transcribe: from committed point to end
+            # Determine what to transcribe: from committed point to end (no overlap)
             committed_samples = int(self._committed_audio_end * config.sample_rate)
-            uncommitted_start = max(0, committed_samples - int(2 * config.sample_rate))  # 2s overlap
+            uncommitted_start = committed_samples
             audio_chunk = None
             with self._lock:
                 audio_chunk = self._buffer[uncommitted_start:buf_len].copy()
@@ -168,7 +168,7 @@ class WhisperRemoteSTT(STTProvider):
                 # Long pause detected → auto-commit
                 self.on_commit(full_text)
                 with self._lock:
-                    self._committed_audio_end = total_time - silence_at_end
+                    self._committed_audio_end = total_time
 
         except Exception as e:
             print(f"\n[stt-remote] Error: {e}")
