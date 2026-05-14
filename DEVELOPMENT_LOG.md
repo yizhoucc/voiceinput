@@ -237,8 +237,45 @@ Mac 麦克风 → sounddevice → 5090 whisper large-v3-turbo (SSH tunnel)
 3. 纯文字 LLM 无法修正没有上下文线索的谐音错误
 4. 5090 必须在线（SSH 隧道），否则退化到 Mac CPU small 模型
 
+## 10. Qwen2-Audio 实验（已放弃）
+
+### 动机
+纯文字 LLM 无法修正没有上下文线索的谐音错误（"穿梳"→"Transformer"靠猜）。Audio LLM 能听到原始发音，理论上能精确修正。
+
+### 实验内容
+在 5090 上部署 Qwen2-Audio-7B-Instruct（15.6GB 显存），测试两种用法：
+
+**A. 直接转录**：audio → Qwen2-Audio → 文字（替代 whisper）
+
+**B. 润色层**：whisper 粗转录 + audio → Qwen2-Audio → 修正文字（替代 Qwen3-8B）
+
+### 遇到的问题
+
+1. **API 参数错误**：transformers 库的 Qwen2AudioProcessor 接受 `audio` 参数而非 `audios`（HuggingFace 官方示例用的是旧版 API）。此 bug 导致音频数据完全没有传入模型，模型在无音频输入下产生幻觉输出（"你家水稻儿栽完啦"）。
+
+2. **修复后直接转录**：模型能听懂内容（输出包含 transformer、QKV、meta 推荐系统等关键词），但用词不精确（"QK维穿双味儿"而非"QKV Transformer"），且倾向于用自然语言描述而非逐字转录。
+
+3. **修复后润色**：输出格式不稳定，经常添加前缀（"好的，根据您的语音..."、"修正后文本："）。部分文件效果好（word overlap 87-100%），但大部分文件输出无关内容（0%）。
+
+### 32 个录音 benchmark 结果
+
+| 方案 | 平均 word overlap |
+|------|-----------------|
+| Whisper large-v3-turbo (GT) | 100% |
+| Qwen2-Audio 直接转录 | 2.2% |
+| Whisper + Qwen2-Audio 润色 | 10.0% |
+| Whisper + Qwen3-8B 文字润色 | 7/28 修正正确，0 误修 |
+
+### 结论
+Qwen2-Audio-7B 的音频理解能力存在，但不适合当前管道：
+- 不支持流式（无法边说边出字）
+- 输出格式不可控（前缀、解释、翻译混入）
+- 逐字转录精度不如 whisper
+- Whisper + Qwen3-8B + 自定义词典仍是最佳方案
+
+Audio LLM 方向正确，但需要等更成熟的模型（如 Qwen2.5-Omni 或专门的 ASR 纠错模型）。
+
 ### 后续方向
-1. Audio LLM（Qwen2-Audio）用 audio tokens 解决谐音问题
-2. 浮动窗口显示 partial（不依赖编辑器）
-3. Apple Speech 后端（真正逐词流式）
-4. SSH 隧道自动管理
+1. 浮动窗口显示 partial（不依赖编辑器）
+2. Apple Speech 后端（真正逐词流式）
+3. 等待更好的 Audio LLM 用于谐音修正
