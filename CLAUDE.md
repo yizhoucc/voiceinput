@@ -83,8 +83,33 @@ Located at `/tmp/whisper_server.py` on WSL. Endpoints:
 
 Features: large-v3-turbo, speaker identification (speechbrain), opencc t2s, language restricted to zh/en.
 
+## Testing & Quality Validation
+
+When modifying STT or insertion logic, always run ground truth comparison:
+
+```bash
+python test_compare.py
+```
+
+This compares full-file transcription (ground truth) vs streaming transcription on saved recordings.
+- Use recordings from `recordings/` directory
+- Ground truth: send full WAV to 5090 server in one request
+- Streaming: feed audio 1s at a time, collect commits
+- Compare word overlap, missing words, extra words
+- Log detailed commit timeline and text diffs
+
+Key quality metrics:
+- Word overlap should be >70% with ground truth
+- No duplicate commits (same text committed twice)
+- Commit interval: 3-8 seconds average
+- All terminal output should match editor output (no data loss in insertion)
+
+Known trade-off: streaming quality < full-file quality due to limited whisper context window.
+Transformer/QKV recognition sometimes fails in short chunks but succeeds in longer context.
+
 ## Hardware
 
 - **Primary**: Mac (Apple Silicon) — runs the app, audio capture, output
 - **Optional**: RTX 5090 on LAN (WSL, 10.0.0.145) — faster-whisper + speaker recognition
+  - SSH tunnel: `ssh -f -N -L 8787:localhost:8787 wsl`
   - SSH tunnel: `ssh -f -N -L 8787:localhost:8787 wsl`
