@@ -51,7 +51,7 @@ class HotkeyListener:
     def _on_press(self, key):
         from pynput import keyboard
         if key == keyboard.Key.f5:
-            self._toggle()
+            threading.Thread(target=self._toggle, daemon=True).start()
 
     def _start_terminal(self):
         t = threading.Thread(target=self._terminal_loop, daemon=True)
