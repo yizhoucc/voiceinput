@@ -7,7 +7,13 @@ from config import config
 
 
 class WhisperLocalSTT(STTProvider):
-    """Streaming STT using faster-whisper sliding window on local CPU."""
+    """Streaming STT using faster-whisper sliding window on local CPU.
+
+    Uses incremental commit to prevent language flip-flopping.
+    """
+
+    OVERLAP_SECONDS = 2
+    WINDOW_SECONDS = 8
 
     def __init__(self, on_partial, on_final):
         super().__init__(on_partial, on_final)
@@ -17,6 +23,9 @@ class WhisperLocalSTT(STTProvider):
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
         self._processing = False
+        self._committed_samples = 0
+        self._committed_text: list[str] = []
+        self._last_partial = ""
 
     def _ensure_model(self):
         if self._model is None:
@@ -45,15 +54,22 @@ class WhisperLocalSTT(STTProvider):
 
         try:
             with self._lock:
-                if len(self._buffer) < config.sample_rate * 0.5:
+                total_samples = len(self._buffer)
+                if total_samples < config.sample_rate * 0.5:
                     return
-                if is_final:
-                    audio_data = self._buffer.copy()
-                else:
-                    max_samples = int(10 * config.sample_rate)
-                    audio_data = self._buffer[-max_samples:].copy()
 
-            if self._model is None:
+                overlap_samples = int(self.OVERLAP_SECONDS * config.sample_rate)
+                start = max(0, self._committed_samples - overlap_samples)
+
+                if is_final:
+                    audio_data = self._buffer[start:].copy()
+                else:
+                    max_end = start + int(self.WINDOW_SECONDS * config.sample_rate)
+                    audio_data = self._buffer[start:min(total_samples, max_end)].copy()
+
+            if self._model is None or len(audio_data) < config.sample_rate * 0.3:
+                if is_final and self._committed_text:
+                    self.on_final(" ".join(self._committed_text))
                 return
 
             segments, _ = self._model.transcribe(
@@ -70,18 +86,33 @@ class WhisperLocalSTT(STTProvider):
             )
 
             text_parts = [seg.text.strip() for seg in segments if seg.text.strip()]
-            full_text = " ".join(text_parts)
-            if not full_text:
+            new_text = " ".join(text_parts)
+
+            if not new_text:
+                if is_final and self._committed_text:
+                    self.on_final(" ".join(self._committed_text))
                 return
 
             if is_final:
-                self.on_final(full_text)
+                all_text = " ".join(self._committed_text + [new_text])
+                self.on_final(all_text)
             else:
-                self.on_partial(full_text)
+                if new_text == self._last_partial and new_text:
+                    self._committed_text.append(new_text)
+                    with self._lock:
+                        self._committed_samples = len(self._buffer)
+                    self._last_partial = ""
+
+                self._last_partial = new_text
+                display = " ".join(self._committed_text + [new_text])
+                self.on_partial(display)
         finally:
             self._processing = False
 
     def reset(self):
         with self._lock:
             self._buffer = np.array([], dtype=np.float32)
+        self._committed_samples = 0
+        self._committed_text.clear()
+        self._last_partial = ""
         self._last_process_time = 0.0
