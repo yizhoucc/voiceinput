@@ -29,8 +29,26 @@ class WhisperRemoteSTT(STTProvider):
         self._processing = False
         self._pending = False
         self._total_samples = 0
-        self._committed_audio_end = 0.0  # global time up to which audio is committed
+        self._committed_audio_end = 0.0
+        self._last_committed_text = ""  # for overlap dedup
         self._client = httpx.Client(timeout=30.0)
+
+    def _dedup(self, text: str) -> str:
+        """Remove overlap/duplicates with last committed text."""
+        if not self._last_committed_text or not text:
+            self._last_committed_text = text
+            return text
+        # Skip if exact same as last commit
+        if text.strip() == self._last_committed_text.strip():
+            return ""
+        # Check if text starts with the tail of last commit
+        tail = self._last_committed_text
+        for overlap_len in range(min(len(tail), len(text)), 2, -1):
+            if text[:overlap_len] == tail[-overlap_len:]:
+                text = text[overlap_len:].strip()
+                break
+        self._last_committed_text = text
+        return text
 
     def _ensure_model(self):
         pass
@@ -106,9 +124,10 @@ class WhisperRemoteSTT(STTProvider):
             if buf_len < config.sample_rate * 0.5:
                 return
 
-            # Determine what to transcribe: from committed point to end (no overlap)
+            # Determine what to transcribe: from committed point (with 1s overlap for context)
             committed_samples = int(self._committed_audio_end * config.sample_rate)
-            uncommitted_start = committed_samples
+            overlap_samples = int(1.0 * config.sample_rate)
+            uncommitted_start = max(0, committed_samples - overlap_samples)
             audio_chunk = None
             with self._lock:
                 audio_chunk = self._buffer[uncommitted_start:buf_len].copy()
@@ -153,10 +172,10 @@ class WhisperRemoteSTT(STTProvider):
             audio_dur = len(audio_chunk) / config.sample_rate
 
             if is_final:
-                # Commit everything
-                if full_text.strip():
-                    self.on_commit(full_text)
-                self.on_final(full_text)
+                deduped = self._dedup(full_text)
+                if deduped.strip():
+                    self.on_commit(deduped)
+                self.on_final(deduped)
                 return
 
             # Show partial in terminal
@@ -166,9 +185,14 @@ class WhisperRemoteSTT(STTProvider):
             silence_at_end = audio_dur - last_seg_end
             if silence_at_end > self.PAUSE_SECONDS and full_text.strip():
                 # Long pause detected → auto-commit
-                self.on_commit(full_text)
+                deduped = self._dedup(full_text)
+                if deduped.strip():
+                    self.on_commit(deduped)
+                # Set committed end to where whisper actually transcribed to
+                # (uncommitted_start/sr + last_seg_end), not total_time
+                actual_end = (uncommitted_start / config.sample_rate) + last_seg_end
                 with self._lock:
-                    self._committed_audio_end = total_time
+                    self._committed_audio_end = actual_end
 
         except Exception as e:
             print(f"\n[stt-remote] Error: {e}")
@@ -186,3 +210,4 @@ class WhisperRemoteSTT(STTProvider):
         self._committed_audio_end = 0.0
         self._last_process_time = 0.0
         self._pending = False
+        self._last_committed_text = ""
