@@ -210,9 +210,8 @@ class WhisperRemoteSTT(STTProvider):
                                 with self._lock:
                                     self._committed_audio_end = actual_end
 
-            # Check for pause: if last segment ends >PAUSE_SECONDS before audio end
-            silence_at_end = audio_dur - last_seg_end
-            if not speaker_changed and silence_at_end > self.PAUSE_SECONDS and full_text.strip():
+            # No auto-pause commit. Only speaker change or manual stop.
+            if False:
                 # Long pause detected → auto-commit
                 deduped = self._dedup(full_text)
                 if deduped.strip():
