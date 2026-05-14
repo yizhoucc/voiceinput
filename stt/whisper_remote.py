@@ -9,16 +9,17 @@ from config import config
 
 
 class WhisperRemoteSTT(STTProvider):
-    """Streaming STT with append-only commits, timestamp-tracked dedup.
+    """Streaming STT: commit the stable prefix of transcription.
 
-    - Whisper processes full WINDOW_SECONDS for quality (no context cutting)
-    - Buffer kept for whisper context, trimmed only for memory (>30s)
-    - Global timestamps track which audio has been committed
-    - Only Cmd+V append, never modify editor text
+    Each run, whisper returns the full transcription of the window.
+    Compare with previous run: the common prefix (characters that
+    didn't change) is stable and can be committed.
+
+    This handles whisper's varying segment boundaries naturally.
     """
 
     WINDOW_SECONDS = 15
-    STABLE_SECONDS = 2.0
+    MIN_COMMIT_CHARS = 3  # don't commit fewer than this many new chars
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
@@ -27,17 +28,17 @@ class WhisperRemoteSTT(STTProvider):
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
         self._processing = False
-        self._total_samples_received = 0  # global sample counter
-        self._committed_until_global = 0.0
-        self._committed_text: list[str] = []
-        self._recent_commits: list[str] = []  # last N committed texts for dedup
+        self._pending = False
+        self._total_samples = 0
+        self._committed_text_str = ""  # full committed text as string
+        self._prev_full_text = ""  # full text from previous run
         self._last_speaker = None
         self._client = httpx.Client(timeout=30.0)
 
     def _ensure_model(self):
         pass
 
-    def _audio_to_wav_bytes(self, audio: np.ndarray) -> bytes:
+    def _to_wav(self, audio: np.ndarray) -> bytes:
         buf = io.BytesIO()
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)
@@ -51,49 +52,60 @@ class WhisperRemoteSTT(STTProvider):
         flat = audio.flatten()
         with self._lock:
             self._buffer = np.concatenate([self._buffer, flat])
-            self._total_samples_received += len(flat)
-            # Trim buffer for memory: keep last 30s
-            max_samples = int(30 * config.sample_rate)
-            if len(self._buffer) > max_samples:
-                self._buffer = self._buffer[-max_samples:]
+            self._total_samples += len(flat)
+            max_s = int(30 * config.sample_rate)
+            if len(self._buffer) > max_s:
+                self._buffer = self._buffer[-max_s:]
 
         now = time.monotonic()
-        if now - self._last_process_time >= self._step_seconds and not self._processing:
-            self._last_process_time = now
-            threading.Thread(target=self._process, args=(False,), daemon=True).start()
+        if now - self._last_process_time >= self._step_seconds:
+            if not self._processing:
+                self._last_process_time = now
+                threading.Thread(target=self._process, args=(False,), daemon=True).start()
+            else:
+                self._pending = True
 
     def finalize(self):
         self._process(is_final=True)
 
-    def _transcribe(self, audio_data: np.ndarray) -> list[dict]:
-        wav_bytes = self._audio_to_wav_bytes(audio_data)
-        lang = config.primary_language or "auto"
-        response = self._client.post(
+    def _transcribe(self, audio_data):
+        resp = self._client.post(
             f"{config.whisper_remote_url}/transcribe",
-            files={"audio": ("chunk.wav", wav_bytes, "audio/wav")},
+            files={"audio": ("c.wav", self._to_wav(audio_data), "audio/wav")},
             data={
-                "language": lang,
+                "language": config.primary_language or "auto",
                 "initial_prompt": config.whisper_prompt,
                 "identify_speaker": "true",
             },
         )
-        response.raise_for_status()
-        return response.json().get("segments", [])
+        resp.raise_for_status()
+        return resp.json().get("segments", [])
 
-    def _fmt_seg(self, seg, for_commit=False):
-        text = seg.get("text", "").strip()
-        speaker = seg.get("speaker", "unknown")
-        if for_commit and speaker == self._last_speaker:
-            return text
-        if for_commit:
-            self._last_speaker = speaker
-        if speaker == "me":
-            return f"[我] {text}"
-        elif speaker == "other":
-            return f"[他] {text}"
-        return text
+    def _format_segments(self, segments):
+        """Format all segments into text with speaker tags."""
+        parts = []
+        for seg in segments:
+            text = seg.get("text", "").strip()
+            if not text:
+                continue
+            speaker = seg.get("speaker", "unknown")
+            if speaker == "me" and speaker != self._last_speaker:
+                parts.append(f"[我] {text}")
+            elif speaker == "other" and speaker != self._last_speaker:
+                parts.append(f"[他] {text}")
+            else:
+                parts.append(text)
+            # Don't update _last_speaker here - do it on commit
+        return " ".join(parts)
 
-    def _process(self, is_final: bool):
+    def _common_prefix_len(self, a: str, b: str) -> int:
+        n = min(len(a), len(b))
+        for i in range(n):
+            if a[i] != b[i]:
+                return i
+        return n
+
+    def _process(self, is_final):
         if self._processing and not is_final:
             return
         self._processing = True
@@ -103,75 +115,70 @@ class WhisperRemoteSTT(STTProvider):
                 buf_len = len(self._buffer)
                 if buf_len < config.sample_rate * 0.5:
                     return
-                window_samples = int(self.WINDOW_SECONDS * config.sample_rate)
-                start = max(0, buf_len - window_samples)
+                win_samples = int(self.WINDOW_SECONDS * config.sample_rate)
+                start = max(0, buf_len - win_samples)
                 audio_data = self._buffer[start:].copy()
-                audio_duration = len(audio_data) / config.sample_rate
-
-                # Global time of window start
-                total_time = self._total_samples_received / config.sample_rate
-                window_start_global = total_time - audio_duration
-
-            if len(audio_data) < config.sample_rate * 0.3:
-                return
 
             segments = self._transcribe(audio_data)
             if not segments:
                 return
 
-            stable_cutoff = audio_duration - self.STABLE_SECONDS
-            new_commits = []
-            partial_texts = []
+            current_full = self._format_segments(segments)
 
-            for seg in segments:
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                seg_end = seg.get("end", 0)
-
-                # Convert to global time
-                seg_end_global = window_start_global + seg_end
-
-                # Skip already committed segments
-                if seg_end_global <= self._committed_until_global + 0.3:
-                    continue
-
-                if is_final or seg_end < stable_cutoff:
-                    formatted = self._fmt_seg(seg, for_commit=True)
-                    new_commits.append((formatted, seg_end_global))
-                else:
-                    partial_texts.append(self._fmt_seg(seg))
-
-            if new_commits:
-                for text, end_global in new_commits:
-                    # Dedup: skip if same text was recently committed
-                    if text in self._recent_commits:
-                        self._committed_until_global = end_global
-                        continue
-                    self.on_commit(text)
-                    self._committed_text.append(text)
-                    self._recent_commits.append(text)
-                    if len(self._recent_commits) > 10:
-                        self._recent_commits.pop(0)
-                    self._committed_until_global = end_global
-
-            display = " ".join(self._committed_text + partial_texts)
             if is_final:
-                self.on_final(display)
-            else:
-                self.on_partial(display)
+                # Commit everything not yet committed
+                new_text = current_full
+                if new_text and new_text != self._committed_text_str:
+                    to_commit = new_text[len(self._committed_text_str):] if new_text.startswith(self._committed_text_str) else new_text
+                    if to_commit.strip():
+                        self.on_commit(to_commit.strip())
+                    self._committed_text_str = new_text
+                self.on_final(self._committed_text_str)
+                return
+
+            # Find stable prefix: chars that are the same in prev and current
+            prefix_len = self._common_prefix_len(self._prev_full_text, current_full)
+
+            # Commit the stable prefix up to the last space (word boundary)
+            # but only the NEW part (after already committed text)
+            committed_len = len(self._committed_text_str)
+            if prefix_len > committed_len + self.MIN_COMMIT_CHARS:
+                # Find last space before prefix_len for clean word boundary
+                commit_end = prefix_len
+                last_space = current_full.rfind(" ", committed_len, commit_end)
+                if last_space > committed_len:
+                    commit_end = last_space
+
+                new_committed = current_full[committed_len:commit_end].strip()
+                if new_committed:
+                    self.on_commit(new_committed)
+                    self._committed_text_str = current_full[:commit_end]
+
+            # Update previous for next comparison
+            self._prev_full_text = current_full
+
+            # Display: committed + partial (the unstable tail)
+            partial = current_full[len(self._committed_text_str):].strip()
+            display = self._committed_text_str
+            if partial:
+                display += " " + partial
+            self.on_partial(display)
 
         except Exception as e:
             print(f"\n[stt-remote] Error: {e}")
         finally:
             self._processing = False
+            if self._pending and not is_final:
+                self._pending = False
+                self._last_process_time = time.monotonic()
+                threading.Thread(target=self._process, args=(False,), daemon=True).start()
 
     def reset(self):
         with self._lock:
             self._buffer = np.array([], dtype=np.float32)
-            self._total_samples_received = 0
-        self._committed_text.clear()
-        self._committed_until_global = 0.0
+            self._total_samples = 0
+        self._committed_text_str = ""
+        self._prev_full_text = ""
         self._last_process_time = 0.0
+        self._pending = False
         self._last_speaker = None
-        self._recent_commits = []
