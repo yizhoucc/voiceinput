@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     # STT
-    stt_provider: str = "whisper_local"  # whisper_local | apple_speech | whisper_remote
+    stt_provider: str = "whisper_remote"  # whisper_local | apple_speech | whisper_remote
     whisper_model: str = "small"  # base=fast but bad Chinese, small=good balance, large-v3-turbo needs GPU
     primary_language: str = "zh"  # "zh" for Chinese-primary with English mixed
     stt_step_ms: int = 2000  # sliding window step in ms
@@ -21,6 +21,9 @@ class Config:
         "LLM, GPT, BERT, ResNet, CNN, RNN, LSTM, "
         "Whisper, Ollama, vLLM, PyTorch, TensorFlow"
     )
+
+    # Remote whisper (5090 via SSH tunnel)
+    whisper_remote_url: str = "http://localhost:8787"
 
     # LLM
     llm_provider: str = "ollama"  # ollama | vllm_remote

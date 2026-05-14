@@ -9,10 +9,18 @@ sys.stdout.reconfigure(line_buffering=True)
 
 import numpy as np
 from audio import AudioCapture
-from stt.whisper_local import WhisperLocalSTT
 from output.terminal import TerminalOutput
 from hotkey import HotkeyListener
 from config import config
+
+
+def create_stt(on_partial, on_final):
+    if config.stt_provider == "whisper_remote":
+        from stt.whisper_remote import WhisperRemoteSTT
+        return WhisperRemoteSTT(on_partial, on_final)
+    else:
+        from stt.whisper_local import WhisperLocalSTT
+        return WhisperLocalSTT(on_partial, on_final)
 
 AUDIO_DIR = Path("recordings")
 AUDIO_DIR.mkdir(exist_ok=True)
@@ -27,7 +35,7 @@ def main():
     def on_final(text: str):
         output.show_final(text)
 
-    stt = WhisperLocalSTT(on_partial=on_partial, on_final=on_final)
+    stt = create_stt(on_partial=on_partial, on_final=on_final)
     audio = AudioCapture()
     recording = False
     feed_thread: threading.Thread | None = None
@@ -85,12 +93,16 @@ def main():
     hotkey = HotkeyListener(on_activate=on_activate, on_deactivate=on_deactivate)
 
     print("=== VoiceInput ===")
-    print(f"STT: whisper local | Model: {config.whisper_model}")
+    provider_info = config.stt_provider
+    if config.stt_provider == "whisper_remote":
+        provider_info += f" ({config.whisper_remote_url})"
+    else:
+        provider_info += f" ({config.whisper_model})"
+    print(f"STT: {provider_info}")
     print(f"Language: {config.primary_language or 'auto-detect'}")
     print()
 
-    # Load model first (blocking), so user knows when ready
-    print("[stt] Loading model...", end=" ", flush=True)
+    print("[stt] Loading...", end=" ", flush=True)
     stt._ensure_model()
     print("done.")
     print()
