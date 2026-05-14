@@ -32,8 +32,31 @@ def main():
     output = TerminalOutput()
     inserter = SystemTextInserter()
 
+    # LLM polisher
+    polisher = None
+    if config.llm_polish_enabled:
+        try:
+            from llm.vllm_remote import VLLMPolisher
+            polisher = VLLMPolisher()
+            print("[llm] Polish enabled via vLLM")
+        except Exception as e:
+            print(f"[llm] Polish disabled: {e}")
+
     # State
-    current_mode = [None]  # "smart" or "manual"
+    current_mode = [None]
+    commit_history = []  # for overlap context
+
+    def polish_text(text: str) -> str:
+        if not polisher:
+            return text
+        ctx_before = commit_history[-1] if commit_history else ""
+        try:
+            result = polisher.polish(text, context_before=ctx_before)
+            if result and result.strip():
+                return result
+        except Exception as e:
+            print(f"\n[llm] Polish error: {e}")
+        return text
 
     def on_partial(text: str):
         output.show_partial(text)
@@ -42,10 +65,11 @@ def main():
         output.show_final(text)
 
     def on_commit(text: str):
-        # In manual mode, don't commit during recording
         if current_mode[0] == "manual":
             return
-        inserter.paste(text + " ")
+        polished = polish_text(text)
+        inserter.paste(polished + " ")
+        commit_history.append(polished)
 
     stt = create_stt(on_partial=on_partial, on_final=on_final, on_commit=on_commit)
     audio_capture = AudioCapture()
@@ -75,6 +99,7 @@ def main():
             return
         recording[0] = True
         current_mode[0] = mode
+        commit_history.clear()
         stt.reset()
         stop_event.clear()
         audio_capture.start()
@@ -123,14 +148,6 @@ def main():
 
     def on_deactivate_manual():
         stop_recording()
-
-    # Override on_commit to handle manual mode finalize
-    original_on_commit = on_commit
-    def smart_on_commit(text):
-        if current_mode[0] == "manual":
-            return  # suppress during manual recording
-        inserter.paste(text + " ")
-    stt.on_commit = smart_on_commit
 
     hotkey = HotkeyListener(
         on_activate=on_activate,
