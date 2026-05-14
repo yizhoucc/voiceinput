@@ -16,11 +16,11 @@ class WhisperRemoteSTT(STTProvider):
     Additionally, a pause > 1s between segments triggers commit.
     """
 
-    OVERLAP_SECONDS = 2
-    WINDOW_SECONDS = 10
-    STABLE_ZONE_SECONDS = 1.5  # segments older than this get committed
-    PAUSE_COMMIT_SECONDS = 0.1  # very short pause triggers commit
-    FORCE_COMMIT_SECONDS = 1.5  # force commit if nothing committed for this long
+    OVERLAP_SECONDS = 3
+    WINDOW_SECONDS = 12
+    STABLE_ZONE_SECONDS = 2.0  # segments older than this get committed
+    PAUSE_COMMIT_SECONDS = 0.5  # pause triggers commit
+    FORCE_COMMIT_SECONDS = 4.0  # force commit if nothing committed for this long
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)

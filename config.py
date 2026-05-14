@@ -7,7 +7,7 @@ class Config:
     stt_provider: str = "whisper_remote"  # whisper_local | apple_speech | whisper_remote
     whisper_model: str = "small"  # base=fast but bad Chinese, small=good balance, large-v3-turbo needs GPU
     primary_language: str | None = None  # None = auto-detect (restricted to zh/en), "zh" = force Chinese
-    stt_step_ms: int = 1500  # sliding window step in ms
+    stt_step_ms: int = 2000  # sliding window step in ms
 
     # Whisper initial_prompt: biases decoder toward recognizing these terms as English
     # instead of forcing them into Chinese characters
