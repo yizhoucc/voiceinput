@@ -25,12 +25,13 @@ class Config:
     # Remote whisper (5090 via SSH tunnel)
     whisper_remote_url: str = "http://localhost:8787"
 
-    # LLM
-    llm_provider: str = "ollama"  # ollama | vllm_remote
+    # LLM Polish
+    llm_provider: str = "vllm_remote"  # ollama | vllm_remote
+    llm_polish_enabled: bool = True
     ollama_model: str = "qwen2.5:7b"
     ollama_url: str = "http://localhost:11434"
-    vllm_url: str = "http://10.0.0.145:8000"
-    vllm_model: str = "qwen2.5-7b"
+    vllm_url: str = "http://localhost:8000"
+    vllm_model: str = "Qwen/Qwen3-8B"
 
     # Audio
     sample_rate: int = 16000
