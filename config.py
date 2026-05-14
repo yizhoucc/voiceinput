@@ -33,6 +33,15 @@ class Config:
     vllm_url: str = "http://localhost:8000"
     vllm_model: str = "Qwen/Qwen3-8B"
 
+    # Custom correction dictionary (whisper常见误识别 → 正确词)
+    custom_corrections: dict = field(default_factory=lambda: {
+        "Cloud": "Claude",
+        "探神": "Transformer",
+        "详维学习": "强化学习",
+        "详话学习": "强化学习",
+        "杀铁": "Sharpe",
+    })
+
     # Audio
     sample_rate: int = 16000
     channels: int = 1
