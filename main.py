@@ -18,7 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="VoiceInput: streaming voice input tool")
     parser.add_argument("--llm", nargs="?", const="default", default=None,
                         help="Enable LLM polish. Optionally specify model name (e.g. --llm Qwen/Qwen3-8B)")
-    parser.add_argument("--local", action="store_true", help="Use local whisper (Mac CPU, no 5090)")
+    parser.add_argument("--local", action="store_true", help="Use Apple Speech (Mac native, word-by-word streaming)")
     parser.add_argument("--language", type=str, default=None, help="Force language: zh, en, or auto (default: auto)")
     parser.add_argument("--no-quantize", action="store_true",
                         help="Disable quantization (use full precision, more VRAM)")
@@ -26,7 +26,10 @@ def parse_args():
 
 
 def create_stt(on_partial, on_final, on_commit=None):
-    if config.stt_provider == "whisper_remote":
+    if config.stt_provider == "apple_speech":
+        from stt.apple_speech import AppleSpeechSTT
+        return AppleSpeechSTT(on_partial, on_final, on_commit)
+    elif config.stt_provider == "whisper_remote":
         from stt.whisper_remote import WhisperRemoteSTT
         return WhisperRemoteSTT(on_partial, on_final, on_commit)
     else:
@@ -42,7 +45,7 @@ def main():
     args = parse_args()
 
     if args.local:
-        config.stt_provider = "whisper_local"
+        config.stt_provider = "apple_speech"
     if args.llm:
         config.llm_polish_enabled = True
         if args.llm != "default":
@@ -68,8 +71,8 @@ def main():
             llm_model=config.vllm_model,
             quantize=config.quantize,
         ):
-            print("[WARNING] 5090 not reachable. Falling back to local Mac mode.")
-            config.stt_provider = "whisper_local"
+            print("[WARNING] 5090 not reachable. Falling back to Apple Speech (local).")
+            config.stt_provider = "apple_speech"
             config.llm_polish_enabled = False
 
     output = TerminalOutput()
@@ -190,6 +193,8 @@ def main():
     print("=== VoiceInput ===")
     if config.stt_provider == "whisper_remote":
         print(f"STT: whisper_remote ({config.whisper_remote_url})")
+    elif config.stt_provider == "apple_speech":
+        print("STT: Apple Speech (macOS native, word-by-word)")
     else:
         print(f"STT: whisper_local ({config.whisper_model})")
     llm_info = "disabled"
