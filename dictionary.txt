@@ -1,0 +1,55 @@
+# VoiceInput 自定义词典
+# 每行一个词条，格式：
+#   术语                    → whisper 识别引导 + LLM 参考
+#   错误写法 -> 正确写法     → 自动纠正（等同 config.custom_corrections）
+#
+# 空行和 # 开头的行被忽略
+
+# AI/ML 术语
+Transformer
+Attention
+QKV
+Query Key Value
+BERT
+GPT
+ResNet
+CNN
+RNN
+LSTM
+GRU
+Reinforcement Learning
+Inverse Reinforcement Learning
+Actor Critic
+Policy Network
+Reward Function
+Backpropagation
+Embedding
+Encoder
+Decoder
+Fine-tuning
+RLHF
+GRPO
+DPO
+HSTU
+
+# 公司/产品
+Anthropic
+Claude
+OpenAI
+ChatGPT
+DeepSeek
+Meta
+PyTorch
+TensorFlow
+Hugging Face
+vLLM
+Ollama
+
+# 常见误识别纠正
+Cloud -> Claude
+探神 -> Transformer
+穿梳 -> Transformer
+穿双味 -> Transformer
+详维学习 -> 强化学习
+详话学习 -> 强化学习
+杀铁 -> Sharpe

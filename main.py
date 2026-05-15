@@ -52,6 +52,14 @@ def main():
     if args.no_quantize:
         config.quantize = False
 
+    # Load custom dictionary
+    from custom_dict import load_dictionary
+    dict_terms, dict_corrections = load_dictionary()
+    if dict_terms:
+        config.whisper_prompt += ", " + ", ".join(dict_terms[:100])
+        print(f"[dict] {len(dict_terms)} terms, {len(dict_corrections)} corrections loaded")
+    config.custom_corrections.update(dict_corrections)
+
     # Auto-manage remote servers, fallback to local if unavailable
     if config.stt_provider == "whisper_remote":
         from server_manager import ensure_servers

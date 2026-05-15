@@ -244,6 +244,15 @@ def main():
         print("[error] No audio files found.")
         sys.exit(1)
 
+    # Load dictionary
+    from custom_dict import load_dictionary
+    from config import config
+    dict_terms, dict_corrections = load_dictionary()
+    if dict_terms:
+        config.whisper_prompt += ", " + ", ".join(dict_terms[:100])
+        config.custom_corrections.update(dict_corrections)
+        print(f"[dict] {len(dict_terms)} terms, {len(dict_corrections)} corrections")
+
     print(f"Transcribing {len(files)} file(s)...\n", flush=True)
 
     all_outputs = []
