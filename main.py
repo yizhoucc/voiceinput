@@ -26,10 +26,7 @@ def parse_args():
 
 
 def create_stt(on_partial, on_final, on_commit=None):
-    if config.stt_provider == "apple_speech":
-        from stt.apple_speech import AppleSpeechSTT
-        return AppleSpeechSTT(on_partial, on_final, on_commit)
-    elif config.stt_provider == "whisper_remote":
+    if config.stt_provider == "whisper_remote":
         from stt.whisper_remote import WhisperRemoteSTT
         return WhisperRemoteSTT(on_partial, on_final, on_commit)
     else:
@@ -155,13 +152,9 @@ def main():
         stt.reset()
         stop_event.clear()
 
-        if config.stt_provider == "apple_speech":
-            import numpy as _np
-            stt.feed_audio(_np.array([], dtype=_np.float32))
-        else:
-            audio_capture.start()
-            feed_thread = threading.Thread(target=feed_loop, daemon=True)
-            feed_thread.start()
+        audio_capture.start()
+        feed_thread = threading.Thread(target=feed_loop, daemon=True)
+        feed_thread.start()
         print(f"[recording:{m}] Speak now...")
 
     def on_stop():
@@ -172,14 +165,13 @@ def main():
         recording = False
         stop_event.set()
 
-        if config.stt_provider != "apple_speech":
-            audio_capture.stop()
-            if feed_thread:
-                feed_thread.join(timeout=2)
-            for chunk in audio_capture.drain():
-                stt.feed_audio(chunk)
+        audio_capture.stop()
+        if feed_thread:
+            feed_thread.join(timeout=2)
+        for chunk in audio_capture.drain():
+            stt.feed_audio(chunk)
 
-        raw = audio_capture.get_raw_audio() if config.stt_provider != "apple_speech" else None
+        raw = audio_capture.get_raw_audio()
         if raw is not None and len(raw) > 0:
             from datetime import datetime
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -200,8 +192,6 @@ def main():
     print("=== VoiceInput ===")
     if config.stt_provider == "whisper_remote":
         print(f"STT: whisper_remote ({config.whisper_remote_url})")
-    elif config.stt_provider == "apple_speech":
-        print("STT: Apple Speech (macOS native, word-by-word)")
     else:
         print(f"STT: whisper_local ({config.whisper_model})")
     llm_info = "disabled"

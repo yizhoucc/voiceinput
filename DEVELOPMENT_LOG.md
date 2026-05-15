@@ -275,7 +275,29 @@ Qwen2-Audio-7B 的音频理解能力存在，但不适合当前管道：
 
 Audio LLM 方向正确，但需要等更成熟的模型（如 Qwen2.5-Omni 或专门的 ASR 纠错模型）。
 
+## 11. Apple Speech 后端实验（已放弃）
+
+### 动机
+Whisper 滑动窗口每 2 秒出一坨文字。Apple Speech（SFSpeechRecognizer）能做真正的逐词流式（每个词出来延迟 <500ms），体验更接近 Typeless。
+
+### 实现
+使用 PyObjC 调用 macOS Speech framework：
+- `SFSpeechRecognizer` + `SFSpeechAudioBufferRecognitionRequest` 做识别
+- `AVAudioEngine` 的 `installTapOnBus` 捕获麦克风音频
+- 手动注册 `objc.registerMetaDataForSelector` 解决 PyObjC block 签名问题
+
+### 遇到的问题
+
+1. **PyObjC block 签名缺失**：`recognitionTaskWithRequest:resultHandler:` 的 block 参数没有元数据，PyObjC 报 `TypeError: Argument 3 is a block, but no signature available`。通过 `objc.registerMetaDataForSelector` 手动注册签名解决。
+
+2. **AVAudioPCMBuffer 数据访问**：PyObjC 无法访问 `floatChannelData()` / `int16ChannelData()` 返回的 C 指针。`initWithCommonFormat:` 的参数映射也不正确（传 3 期望 float32 但实际创建 Int16）。改用 AVAudioEngine 的 `installTapOnBus` 绕过手动 buffer 创建。
+
+3. **权限问题（致命）**：macOS 的 Speech Recognition 权限要求应用具有 `NSSpeechRecognitionUsageDescription`（在 Info.plist 中），且必须是 `.app` bundle。Python 脚本无法请求此权限，`SFSpeechRecognizer.authorizationStatus()` 永远返回 `notDetermined`(0)。结果：识别引擎启动但回调永远不触发，无任何输出。
+
+### 结论
+Apple Speech 在 Python 脚本环境下不可用。需要将应用打包为 `.app` bundle（如用 py2app 或 Tauri）才能请求语音识别权限。当前项目阶段不值得为此打包。
+
 ### 后续方向
 1. 浮动窗口显示 partial（不依赖编辑器文字修改）
-2. Apple Speech 后端（macOS SFSpeechRecognizer，真正逐词流式，延迟 <500ms）
-3. 等待更成熟的 Audio LLM 用于谐音修正（Qwen2.5-Omni 等）
+2. 等待更成熟的 Audio LLM 用于谐音修正（Qwen2.5-Omni 等）
+3. 如需 Apple Speech：打包为 .app bundle
