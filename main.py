@@ -154,9 +154,14 @@ def main():
         last_commit = ""
         stt.reset()
         stop_event.clear()
-        audio_capture.start()
-        feed_thread = threading.Thread(target=feed_loop, daemon=True)
-        feed_thread.start()
+
+        if config.stt_provider == "apple_speech":
+            # Apple Speech uses its own audio engine, just trigger start
+            stt.feed_audio(np.array([], dtype=np.float32))
+        else:
+            audio_capture.start()
+            feed_thread = threading.Thread(target=feed_loop, daemon=True)
+            feed_thread.start()
         print(f"[recording:{m}] Speak now...")
 
     def on_stop():
@@ -166,13 +171,15 @@ def main():
         m = mode
         recording = False
         stop_event.set()
-        audio_capture.stop()
-        if feed_thread:
-            feed_thread.join(timeout=2)
-        for chunk in audio_capture.drain():
-            stt.feed_audio(chunk)
 
-        raw = audio_capture.get_raw_audio()
+        if config.stt_provider != "apple_speech":
+            audio_capture.stop()
+            if feed_thread:
+                feed_thread.join(timeout=2)
+            for chunk in audio_capture.drain():
+                stt.feed_audio(chunk)
+
+        raw = audio_capture.get_raw_audio() if config.stt_provider != "apple_speech" else None
         if raw is not None and len(raw) > 0:
             from datetime import datetime
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
