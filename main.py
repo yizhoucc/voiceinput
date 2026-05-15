@@ -79,6 +79,7 @@ def main():
     mode = None
     recording = False
     last_commit = ""
+    screen_keywords = []
     feed_thread = None
     stop_event = threading.Event()
 
@@ -87,7 +88,10 @@ def main():
         if not polisher:
             return text
         try:
-            result = polisher.polish(text, context_before=last_commit)
+            ctx = last_commit
+            if screen_keywords:
+                ctx = f"[屏幕关键词] {', '.join(screen_keywords[:30])}\n{ctx}"
+            result = polisher.polish(text, context_before=ctx)
             if result and result.strip():
                 return result
         except Exception as e:
@@ -120,10 +124,21 @@ def main():
                 stt.feed_audio(chunk)
 
     def on_start(m):
-        nonlocal mode, recording, last_commit, feed_thread
+        nonlocal mode, recording, last_commit, feed_thread, screen_keywords
         if recording:
             return
         recording = True
+
+        # Capture screen context for better recognition
+        try:
+            from screen_context import get_screen_keywords
+            screen_keywords = get_screen_keywords()
+            if screen_keywords:
+                extra = ", ".join(screen_keywords[:30])
+                config.whisper_prompt = config.whisper_prompt.rstrip() + ", " + extra
+                print(f"[context] {len(screen_keywords)} screen keywords captured")
+        except Exception:
+            screen_keywords = []
         mode = m
         last_commit = ""
         stt.reset()
