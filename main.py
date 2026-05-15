@@ -156,8 +156,8 @@ def main():
         stop_event.clear()
 
         if config.stt_provider == "apple_speech":
-            # Apple Speech uses its own audio engine, just trigger start
-            stt.feed_audio(np.array([], dtype=np.float32))
+            import numpy as _np
+            stt.feed_audio(_np.array([], dtype=_np.float32))
         else:
             audio_capture.start()
             feed_thread = threading.Thread(target=feed_loop, daemon=True)
