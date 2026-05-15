@@ -45,7 +45,7 @@ def main():
     args = parse_args()
 
     if args.local:
-        config.stt_provider = "apple_speech"
+        config.stt_provider = "whisper_local"
     if args.llm:
         config.llm_polish_enabled = True
         if args.llm != "default":
@@ -71,8 +71,8 @@ def main():
             llm_model=config.vllm_model,
             quantize=config.quantize,
         ):
-            print("[WARNING] 5090 not reachable. Falling back to Apple Speech (local).")
-            config.stt_provider = "apple_speech"
+            print("[WARNING] 5090 not reachable. Falling back to local whisper.")
+            config.stt_provider = "whisper_local"
             config.llm_polish_enabled = False
 
     output = TerminalOutput()
