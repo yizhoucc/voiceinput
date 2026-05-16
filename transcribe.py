@@ -54,33 +54,28 @@ def transcribe_remote(filepath, language=None):
 
 
 def transcribe_local(filepath, language=None):
-    import numpy as np
-    import soundfile as sf
-    from faster_whisper import WhisperModel
+    import mlx_whisper
+    from config import config
 
-    audio, sr = sf.read(filepath)
-    audio = audio.astype(np.float32)
-    if sr != 16000:
-        import librosa
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=16000)
+    result = mlx_whisper.transcribe(
+        filepath,
+        path_or_hf_repo=config.whisper_model,
+        language=language,
+        initial_prompt=config.whisper_prompt,
+    )
 
-    model = WhisperModel("small", device="cpu", compute_type="int8")
-    segments, info = model.transcribe(
-        audio, language=language, beam_size=5, vad_filter=True,
-        vad_parameters=dict(threshold=0.5, min_silence_duration_ms=500))
-
-    result_segments = []
-    for seg in segments:
-        result_segments.append({
-            "start": seg.start,
-            "end": seg.end,
-            "text": seg.text.strip(),
+    segments = []
+    for seg in result.get("segments", []):
+        segments.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"].strip(),
             "speaker": "unknown",
         })
     return {
-        "segments": result_segments,
-        "language": info.language,
-        "language_probability": info.language_probability,
+        "segments": segments,
+        "language": result.get("language", "unknown"),
+        "language_probability": 1.0,
     }
 
 

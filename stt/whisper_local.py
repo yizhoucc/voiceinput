@@ -1,120 +1,142 @@
+"""Local STT using MLX Whisper on Apple Silicon GPU."""
 import threading
 import time
 import numpy as np
-from faster_whisper import WhisperModel
+import mlx_whisper
+from audio_utils import save_wav
 from stt.base import STTProvider
 from config import config
+from pathlib import Path
 
 
 class WhisperLocalSTT(STTProvider):
-    """Streaming STT using faster-whisper sliding window on local CPU.
+    """Streaming STT using MLX Whisper on Mac GPU.
 
-    Uses incremental commit to prevent language flip-flopping.
+    mlx_whisper.transcribe() takes a file path, so we save audio chunks
+    to a temp file and transcribe periodically.
     """
 
-    OVERLAP_SECONDS = 3
-    WINDOW_SECONDS = 12
+    WINDOW_SECONDS = 15
 
     def __init__(self, on_partial, on_final, on_commit=None):
         super().__init__(on_partial, on_final, on_commit)
-        self._model: WhisperModel | None = None
-        self._buffer = np.array([], dtype=np.float32)
+        self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._last_process_time = 0.0
         self._step_seconds = config.stt_step_ms / 1000.0
         self._processing = False
-        self._committed_samples = 0
-        self._committed_text: list[str] = []
-        self._last_partial = ""
+        self._pending = False
+        self._prev_text = ""
+        self._committed_text = ""
+        self._tmp_path = Path("/tmp/_voiceinput_mlx_chunk.wav")
 
     def warmup(self):
-        if self._model is None:
-            self._model = WhisperModel(
-                config.whisper_model,
-                device="cpu",
-                compute_type="int8",
-            )
+        # Trigger model download on first use
+        dummy = np.zeros(16000, dtype=np.float32)
+        save_wav(dummy, self._tmp_path, config.sample_rate)
+        mlx_whisper.transcribe(str(self._tmp_path),
+            path_or_hf_repo=config.whisper_model)
 
     def feed_audio(self, audio: np.ndarray):
+        flat = audio.flatten()
         with self._lock:
-            self._buffer = np.concatenate([self._buffer, audio.flatten()])
+            self._chunks.append(flat)
 
         now = time.monotonic()
-        if now - self._last_process_time >= self._step_seconds and not self._processing:
-            self._last_process_time = now
-            threading.Thread(target=self._process, args=(False,), daemon=True).start()
+        if now - self._last_process_time >= self._step_seconds:
+            if not self._processing:
+                self._last_process_time = now
+                threading.Thread(target=self._process, args=(False,), daemon=True).start()
+            else:
+                self._pending = True
 
     def finalize(self):
         self._process(is_final=True)
 
-    def _process(self, is_final: bool):
+    def _get_audio(self):
+        with self._lock:
+            if not self._chunks:
+                return np.array([], dtype=np.float32)
+            buf = np.concatenate(self._chunks)
+            max_s = int(30 * config.sample_rate)
+            if len(buf) > max_s:
+                buf = buf[-max_s:]
+                self._chunks = [buf]
+            return buf
+
+    def _transcribe(self, audio: np.ndarray) -> str:
+        save_wav(audio, self._tmp_path, config.sample_rate)
+        result = mlx_whisper.transcribe(
+            str(self._tmp_path),
+            path_or_hf_repo=config.whisper_model,
+            language=config.primary_language,
+            initial_prompt=config.whisper_prompt,
+        )
+        return result.get("text", "").strip()
+
+    def _common_prefix_len(self, a: str, b: str) -> int:
+        n = min(len(a), len(b))
+        for i in range(n):
+            if a[i] != b[i]:
+                return i
+        return n
+
+    def _process(self, is_final):
         if self._processing and not is_final:
             return
         self._processing = True
 
         try:
-            with self._lock:
-                total_samples = len(self._buffer)
-                if total_samples < config.sample_rate * 0.5:
-                    return
-
-                overlap_samples = int(self.OVERLAP_SECONDS * config.sample_rate)
-                start = max(0, self._committed_samples - overlap_samples)
-
-                if is_final:
-                    audio_data = self._buffer[start:].copy()
-                else:
-                    max_end = start + int(self.WINDOW_SECONDS * config.sample_rate)
-                    audio_data = self._buffer[start:min(total_samples, max_end)].copy()
-
-            if self._model is None or len(audio_data) < config.sample_rate * 0.3:
-                if is_final and self._committed_text:
-                    self.on_final(" ".join(self._committed_text))
+            buf = self._get_audio()
+            if len(buf) < config.sample_rate * 0.5:
                 return
 
-            segments, _ = self._model.transcribe(
-                audio_data,
-                language=config.primary_language,
-                initial_prompt=config.whisper_prompt,
-                beam_size=1,
-                best_of=1,
-                vad_filter=True,
-                vad_parameters=dict(
-                    threshold=config.vad_threshold,
-                    min_silence_duration_ms=config.silence_duration_ms,
-                ),
-            )
+            # Take last WINDOW_SECONDS for processing
+            win = int(self.WINDOW_SECONDS * config.sample_rate)
+            audio = buf[-win:] if len(buf) > win else buf
 
-            text_parts = [seg.text.strip() for seg in segments if seg.text.strip()]
-            new_text = " ".join(text_parts)
-
-            if not new_text:
-                if is_final and self._committed_text:
-                    self.on_final(" ".join(self._committed_text))
+            text = self._transcribe(audio)
+            if not text:
                 return
 
             if is_final:
-                all_text = " ".join(self._committed_text + [new_text])
-                self.on_final(all_text)
-            else:
-                if new_text == self._last_partial and new_text:
-                    self._committed_text.append(new_text)
-                    with self._lock:
-                        keep_from = max(0, len(self._buffer) - int(self.OVERLAP_SECONDS * config.sample_rate))
-                        self._buffer = self._buffer[keep_from:]
-                        self._committed_samples = len(self._buffer)
-                    self._last_partial = ""
+                self.on_commit(text)
+                self.on_final(text)
+                return
 
-                self._last_partial = new_text
-                display = " ".join(self._committed_text + [new_text])
-                self.on_partial(display)
+            self.on_partial(text)
+
+            # Prefix stability commit
+            prefix_len = self._common_prefix_len(self._prev_text, text)
+            committed_len = len(self._committed_text)
+            if prefix_len > committed_len + 3:
+                commit_end = prefix_len
+                last_space = text.rfind(" ", committed_len, commit_end)
+                if last_space > committed_len:
+                    commit_end = last_space
+                new = text[committed_len:commit_end].strip()
+                if new:
+                    self.on_commit(new)
+                    self._committed_text = text[:commit_end]
+
+            self._prev_text = text
+
+        except Exception as e:
+            print(f"\n[stt-local] Error: {e}")
         finally:
             self._processing = False
+            if self._pending and not is_final:
+                self._pending = False
+                self._last_process_time = time.monotonic()
+                threading.Thread(target=self._process, args=(False,), daemon=True).start()
 
     def reset(self):
         with self._lock:
-            self._buffer = np.array([], dtype=np.float32)
-        self._committed_samples = 0
-        self._committed_text.clear()
-        self._last_partial = ""
+            self._chunks.clear()
+        self._prev_text = ""
+        self._committed_text = ""
         self._last_process_time = 0.0
+        self._pending = False
+
+    def prepare_finalize(self):
+        self._committed_text = ""

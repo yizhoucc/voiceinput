@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class Config:
     # STT
     stt_provider: str = "whisper_remote"
-    whisper_model: str = "small"
+    whisper_model: str = "mlx-community/whisper-large-v3-turbo"
     primary_language: str | None = None
     stt_step_ms: int = 2000
 
