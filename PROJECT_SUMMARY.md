@@ -7,13 +7,20 @@
 ## 架构
 
 ```
-Mac 麦克风 → 音频 chunks → 5090 GPU (whisper large-v3-turbo)
-                                    ↓
-                              流式转录 + Speaker 识别
-                                    ↓
-                              LLM 润色 (Qwen3-8B)
-                                    ↓
-                              编辑器光标位置插入 (Cmd+V)
+Mac 麦克风 → sounddevice
+                 ↓
+         ┌── 5090 模式（默认）──────────────────────┐
+         │  SSH tunnel → whisper large-v3-turbo      │
+         │             → speaker 识别 (speechbrain)   │
+         │             → 字典纠正 + Qwen3-8B 润色     │
+         └───────────────────────────────────────────┘
+         ┌── 本地模式 (--local) ────────────────────┐
+         │  MLX Whisper large-v3-turbo (Mac GPU)    │
+         └───────────────────────────────────────────┘
+                 ↓
+         屏幕 OCR 上下文 → whisper prompt + LLM context
+                 ↓
+         Cmd+V 插入编辑器光标
 ```
 
 ### 核心设计决策
@@ -23,11 +30,12 @@ Mac 麦克风 → 音频 chunks → 5090 GPU (whisper large-v3-turbo)
 3. **Append-only 插入**：编辑器文字只追加不修改，避免 backspace/undo 竞态问题
 4. **前缀稳定性 commit**：比较连续两次转录的公共前缀，稳定部分自动 commit
 5. **Speaker 切换自动 commit**：检测到说话人变化时自动切断并 commit
+6. **屏幕上下文**：OCR 截屏提取关键词，注入 whisper prompt 辅助识别
 
 ### 两种录音模式
 
 - **Ctrl+Shift+R (Smart)**：speaker 切换时自动 commit 到编辑器
-- **Ctrl+Shift+E (Manual)**：全手动，停止时才 commit
+- **Ctrl+Shift+E (Manual)**：停止时才 commit（适合长段独白）
 
 ## 技术栈
 
@@ -40,38 +48,45 @@ Mac 麦克风 → 音频 chunks → 5090 GPU (whisper large-v3-turbo)
 | LLM 润色 | Qwen3-8B via vLLM | 5090 GPU |
 | 繁简转换 | opencc | 5090 server |
 | 屏幕上下文 | macOS Vision OCR | Mac 本地 |
-| 自定义词典 | dictionary.txt | Mac 本地 |
 | 文字插入 | osascript Cmd+V | Mac 本地 |
 | 全局快捷键 | pynput | Mac 本地 |
 
 ## 性能指标
 
-- STT 延迟 (5090)：0.5s / 30s 音频（25x 实时）
-- STT 延迟 (Mac MLX)：5.7s / 30s 音频
+### 5090 远程模式
+- STT 延迟：0.5s / 30s 音频（25x 实时）
 - LLM 润色：~0.5s / segment
-- 全管道端到端：2-4 秒（说完到编辑器出字）
-- 内存：O(1)，buffer 定期裁剪
+- 全管道端到端：2-4 秒
+- 准确率：100%（ground truth baseline）
 
-## 质量指标（39 个录音测试）
+### Mac 本地模式 (MLX Whisper)
+- STT 延迟：5.7s / file 平均
+- 准确率：91%（字符级重叠）
+- 无需网络，无需 5090
+
+### 对比（33 个录音测试）
+| 方案 | 字符准确率 | 速度 |
+|------|-----------|------|
+| 5090 large-v3-turbo | 100% | 0.5s |
+| MLX large-v3-turbo (Mac GPU) | 91% | 5.7s |
+| faster-whisper small (Mac CPU) | 78% | 4.3s |
+
+## 质量指标
 
 - Speaker 识别：全部正确
 - LLM 修正：7/28 有修正，0 误修
 - 关键修正：Cloud→Claude, 探神→Transformer, 详维→强化, 开合→开盒
-- GT vs streaming 差距：whisper 滑动窗口固有限制，非管道问题
+- 量化 (int8) 对质量无影响
 
 ## 已知限制
 
 1. **streaming 质量 < 全文件质量**：whisper 滑动窗口上下文有限
 2. **编辑器插入需要 Accessibility 权限**
-3. **5090 不在线时无 Speaker 识别和 LLM 润色**
-
-## 已尝试并放弃的方案
-
-- **Qwen2-Audio 润色**：API 问题修复后能听懂音频，但输出格式不可控，不如 Qwen3-8B 文字润色稳定
-- **Apple Speech 后端**：macOS 要求 .app bundle 才能请求语音识别权限，Python 脚本无法使用
-- **faster-whisper 本地**：CTranslate2 不支持 Apple Silicon GPU，被 MLX Whisper 替代
+3. **5090 必须在线**才能使用远程 STT/LLM/Speaker 识别
+4. **屏幕 OCR 关键词有噪音**：UI 元素和乱码需过滤
 
 ## 后续方向
 
-1. **浮动窗口**：显示实时 partial（不依赖编辑器文字修改）
-2. **等待更成熟的 Audio LLM**（Qwen2.5-Omni 等）用于谐音修正
+1. 浮动窗口显示 partial（不依赖编辑器文字修改）
+2. 等待更成熟的 Audio LLM 用于谐音修正
+3. 打包为 .app bundle（可启用 Apple Speech 逐词流式）
