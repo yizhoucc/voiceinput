@@ -95,6 +95,10 @@ class WhisperLocalSTT(STTProvider):
             win = int(self.WINDOW_SECONDS * config.sample_rate)
             audio = buf[-win:] if len(buf) > win else buf
 
+            # Skip if audio is silent (no mic permission or no speech)
+            if np.max(np.abs(audio)) < 0.001:
+                return
+
             text = self._transcribe(audio)
             if not text:
                 return
