@@ -297,7 +297,31 @@ Whisper 滑动窗口每 2 秒出一坨文字。Apple Speech（SFSpeechRecognizer
 ### 结论
 Apple Speech 在 Python 脚本环境下不可用。需要将应用打包为 `.app` bundle（如用 py2app 或 Tauri）才能请求语音识别权限。当前项目阶段不值得为此打包。
 
+## 12. MLX Whisper 替代 faster-whisper
+
+### 动机
+faster-whisper 使用 CTranslate2 引擎，不支持 Apple Silicon GPU（Metal），Mac 上只能跑 CPU。small 模型准确率 78%，large-v3-turbo 在 CPU 上太慢（8.6s/30s）无法实时。
+
+### 方案
+MLX Whisper 是 Whisper 的 MLX 框架移植，原生支持 Apple Silicon GPU 加速。使用 `mlx-community/whisper-large-v3-turbo` 模型——和 5090 上跑的同一个 large-v3-turbo，只是用 MLX 在 Mac GPU 上推理。
+
+### 33 个录音 benchmark 结果
+
+| 方案 | 平均字符重叠 | 平均速度/文件 |
+|------|------------|-------------|
+| 5090 large-v3-turbo (GT) | 100% | 0.5s |
+| MLX large-v3-turbo (Mac GPU) | **91%** | 5.7s |
+| faster-whisper small (Mac CPU) | 78% | 4.3s |
+
+### 评估方法修正
+最初使用 word-level overlap 评估，MLX 得分只有 5%（看似极差）。根因是 MLX 输出缺少标点和空格，分词后长串无法匹配。改用 character-level overlap 后得分 91%，反映了真实质量。
+
+### 结论
+MLX Whisper 全面替换 faster-whisper 作为本地 STT：
+- 准确率 +13%（78% → 91%）
+- 同一个 large-v3-turbo 模型，质量接近 5090
+- Apple Silicon GPU 加速，无需额外硬件
+
 ### 后续方向
 1. 浮动窗口显示 partial（不依赖编辑器文字修改）
 2. 等待更成熟的 Audio LLM 用于谐音修正（Qwen2.5-Omni 等）
-3. 如需 Apple Speech：打包为 .app bundle

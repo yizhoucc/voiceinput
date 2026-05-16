@@ -34,16 +34,20 @@ Mac 麦克风 → 音频 chunks → 5090 GPU (whisper large-v3-turbo)
 | 组件 | 技术 | 位置 |
 |------|------|------|
 | 音频采集 | sounddevice | Mac 本地 |
-| STT | faster-whisper large-v3-turbo | 5090 GPU via SSH tunnel |
+| STT (远程) | faster-whisper large-v3-turbo | 5090 GPU via SSH tunnel |
+| STT (本地) | MLX Whisper large-v3-turbo | Mac Apple Silicon GPU |
 | Speaker 识别 | speechbrain ECAPA-TDNN | 5090 GPU |
 | LLM 润色 | Qwen3-8B via vLLM | 5090 GPU |
 | 繁简转换 | opencc | 5090 server |
+| 屏幕上下文 | macOS Vision OCR | Mac 本地 |
+| 自定义词典 | dictionary.txt | Mac 本地 |
 | 文字插入 | osascript Cmd+V | Mac 本地 |
 | 全局快捷键 | pynput | Mac 本地 |
 
 ## 性能指标
 
-- STT 延迟：0.5s / 30s 音频（25x 实时）
+- STT 延迟 (5090)：0.5s / 30s 音频（25x 实时）
+- STT 延迟 (Mac MLX)：5.7s / 30s 音频
 - LLM 润色：~0.5s / segment
 - 全管道端到端：2-4 秒（说完到编辑器出字）
 - 内存：O(1)，buffer 定期裁剪
@@ -59,12 +63,15 @@ Mac 麦克风 → 音频 chunks → 5090 GPU (whisper large-v3-turbo)
 
 1. **streaming 质量 < 全文件质量**：whisper 滑动窗口上下文有限
 2. **编辑器插入需要 Accessibility 权限**
-3. **5090 必须在线**（SSH 隧道）才能使用远程 STT/LLM
-4. **本地 Mac CPU 模式**（small 模型）质量明显低于 5090
+3. **5090 不在线时无 Speaker 识别和 LLM 润色**
+
+## 已尝试并放弃的方案
+
+- **Qwen2-Audio 润色**：API 问题修复后能听懂音频，但输出格式不可控，不如 Qwen3-8B 文字润色稳定
+- **Apple Speech 后端**：macOS 要求 .app bundle 才能请求语音识别权限，Python 脚本无法使用
+- **faster-whisper 本地**：CTranslate2 不支持 Apple Silicon GPU，被 MLX Whisper 替代
 
 ## 后续方向
 
-1. **Audio LLM**（Qwen2-Audio）：用 audio tokens + 粗转录一起润色，解决谐音问题
-2. **浮动窗口**：Tkinter/SwiftUI overlay 显示实时 partial
-3. **Apple Speech 后端**：macOS 原生逐词流式，延迟更低
-4. **自动 SSH 隧道管理**：断线重连
+1. **浮动窗口**：显示实时 partial（不依赖编辑器文字修改）
+2. **等待更成熟的 Audio LLM**（Qwen2.5-Omni 等）用于谐音修正
