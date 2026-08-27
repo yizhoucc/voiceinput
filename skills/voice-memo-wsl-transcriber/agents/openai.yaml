@@ -1,0 +1,4 @@
+interface:
+  display_name: "Voice Memos via WSL"
+  short_description: "Transcribe Mac Voice Memos on the WSL GPU"
+  default_prompt: "Use $voice-memo-wsl-transcriber to test and transcribe my MacBook Voice Memos with WSL, preserving raw and polished outputs."
