@@ -268,6 +268,19 @@ def polish_texts(url: str, model: str, texts: list[str], timeout: int) -> list[s
     return validated
 
 
+def polish_texts_resilient(args, texts: list[str]) -> list[str]:
+    """Split malformed batches recursively; preserve raw text for irreducible failures."""
+    try:
+        return polish_texts(args.url, args.model, texts, args.timeout)
+    except Exception as exc:
+        if len(texts) == 1:
+            print(f"[polish-fallback] {type(exc).__name__}: {exc}", flush=True)
+            return texts
+        midpoint = len(texts) // 2
+        print(f"[polish-retry] items={len(texts)} reason={type(exc).__name__}", flush=True)
+        return polish_texts_resilient(args, texts[:midpoint]) + polish_texts_resilient(args, texts[midpoint:])
+
+
 def polish_one(source: Path, output_dir: Path, args) -> tuple[str, bool, str]:
     output = output_dir / source.name.replace(".raw.txt", ".polished.txt")
     if output.exists() and not args.force:
@@ -293,7 +306,7 @@ def polish_one(source: Path, output_dir: Path, args) -> tuple[str, bool, str]:
         groups = group_indices(texts, args.max_chars)
         corrected = list(texts)
         for group in groups:
-            values = polish_texts(args.url, args.model, [texts[index] for index in group], args.timeout)
+            values = polish_texts_resilient(args, [texts[index] for index in group])
             for index, value in zip(group, values):
                 corrected[index] = value
 
