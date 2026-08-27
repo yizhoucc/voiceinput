@@ -18,6 +18,7 @@ from pathlib import Path
 AUDIO_EXTENSIONS = {".m4a", ".qta", ".wav", ".mp3", ".aac", ".flac", ".ogg", ".mov", ".mp4"}
 TIMESTAMP_RE = re.compile(r"^\[[0-9:.]+-[0-9:.]+\]", re.MULTILINE)
 SPEAKER_RE = re.compile(r"\[Speaker \d+\]")
+TRANSCRIPT_LINE_RE = re.compile(r"^(\[[0-9:.]+-[0-9:.]+\] \[Speaker \d+\] )(.*)$")
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -203,38 +204,39 @@ def transcribe_command(args) -> None:
         raise SystemExit(2)
 
 
-POLISH_PROMPT = """你是语音转录校对助手。只修正高度确定的语音识别错误、错别字、繁简体和标点。
-每行开头的标题、时间戳和说话人标签必须原样保留。
-严格保持原意、行数和信息量，不概括、不扩写、不删除；无法确定时必须保留原文。
-只输出校对后的全文。"""
+POLISH_PROMPT = """你是语音转录校对助手。输入是一个 JSON 字符串数组，每个元素是一句转录文本。
+只修正高度确定的语音识别错误、错别字、繁简体和标点。
+严格保持原意、元素数量和信息量，不概括、不扩写、不删除；无法确定时必须保留原文。
+只输出同样长度的 JSON 字符串数组，不要输出解释或 Markdown。"""
 
 
-def split_chunks(text: str, max_chars: int) -> list[str]:
-    lines = text.splitlines(keepends=True)
-    chunks = []
+def group_indices(texts: list[str], max_chars: int) -> list[list[int]]:
+    groups = []
     current = []
     size = 0
-    for line in lines:
-        if current and size + len(line) > max_chars:
-            chunks.append("".join(current))
+    for index, text in enumerate(texts):
+        item_size = len(text) + 8
+        if current and size + item_size > max_chars:
+            groups.append(current)
             current = []
             size = 0
-        current.append(line)
-        size += len(line)
+        current.append(index)
+        size += item_size
     if current:
-        chunks.append("".join(current))
-    return chunks
+        groups.append(current)
+    return groups
 
 
-def polish_chunk(url: str, model: str, text: str, timeout: int) -> str:
+def polish_texts(url: str, model: str, texts: list[str], timeout: int) -> list[str]:
+    user_content = json.dumps(texts, ensure_ascii=False)
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": POLISH_PROMPT},
-            {"role": "user", "content": text},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
-        "max_tokens": min(3600, max(512, int(len(text) * 1.35))),
+        "max_tokens": min(3600, max(512, int(len(user_content) * 1.35))),
     }
     request = urllib.request.Request(
         url.rstrip("/") + "/v1/chat/completions",
@@ -243,15 +245,27 @@ def polish_chunk(url: str, model: str, text: str, timeout: int) -> str:
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         result = json.load(response)
-    polished = result["choices"][0]["message"]["content"].strip() + "\n"
-    original_timestamps = TIMESTAMP_RE.findall(text)
-    polished_timestamps = TIMESTAMP_RE.findall(polished)
-    original_speakers = SPEAKER_RE.findall(text)
-    polished_speakers = SPEAKER_RE.findall(polished)
-    ratio = len(polished) / max(1, len(text))
-    if original_timestamps != polished_timestamps or original_speakers != polished_speakers or not 0.65 <= ratio <= 1.35:
-        raise ValueError("polished chunk failed structure/length validation")
-    return polished
+    content = result["choices"][0]["message"]["content"].strip()
+    if content.startswith("```"):
+        content = re.sub(r"^```(?:json)?\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+    start = content.find("[")
+    end = content.rfind("]")
+    if start < 0 or end < start:
+        raise ValueError("polish response did not contain a JSON array")
+    polished = json.loads(content[start:end + 1])
+    if not isinstance(polished, list) or len(polished) != len(texts):
+        raise ValueError("polish response changed the number of text items")
+
+    validated = []
+    for original, candidate in zip(texts, polished):
+        if not isinstance(candidate, str) or "\n" in candidate or "\r" in candidate:
+            validated.append(original)
+            continue
+        candidate = candidate.strip()
+        ratio = len(candidate) / max(1, len(original))
+        validated.append(candidate if candidate and 0.55 <= ratio <= 1.65 else original)
+    return validated
 
 
 def polish_one(source: Path, output_dir: Path, args) -> tuple[str, bool, str]:
@@ -260,10 +274,33 @@ def polish_one(source: Path, output_dir: Path, args) -> tuple[str, bool, str]:
         return source.name, True, "skip"
     try:
         raw = source.read_text(encoding="utf-8")
-        chunks = split_chunks(raw, args.max_chars)
-        polished = "".join(polish_chunk(args.url, args.model, chunk, args.timeout) for chunk in chunks)
-        atomic_write(output, polished)
-        return source.name, True, f"chunks={len(chunks)}"
+        lines = raw.splitlines()
+        prefixes = []
+        texts = []
+        line_indices = []
+        for line_index, line in enumerate(lines):
+            match = TRANSCRIPT_LINE_RE.match(line)
+            if not match:
+                continue
+            prefixes.append(match.group(1))
+            texts.append(match.group(2))
+            line_indices.append(line_index)
+
+        if not texts:
+            atomic_write(output, raw if raw.endswith("\n") else raw + "\n")
+            return source.name, True, "chunks=0"
+
+        groups = group_indices(texts, args.max_chars)
+        corrected = list(texts)
+        for group in groups:
+            values = polish_texts(args.url, args.model, [texts[index] for index in group], args.timeout)
+            for index, value in zip(group, values):
+                corrected[index] = value
+
+        for item_index, line_index in enumerate(line_indices):
+            lines[line_index] = prefixes[item_index] + corrected[item_index]
+        atomic_write(output, "\n".join(lines) + "\n")
+        return source.name, True, f"chunks={len(groups)}"
     except Exception as exc:
         return source.name, False, f"{type(exc).__name__}: {exc}"
 
