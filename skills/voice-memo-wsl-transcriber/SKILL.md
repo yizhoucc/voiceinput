@@ -1,6 +1,6 @@
 ---
 name: voice-memo-wsl-transcriber
-description: Transcribe Apple Voice Memos stored on the user's remote MacBook with the WSL RTX 5090, including timestamps, speaker labels, resumable raw outputs, and optional local Qwen polishing. Use for one-file tests or complete Voice Memos archive runs; do not use for live dictation.
+description: Transcribe Apple Voice Memos stored on the user's remote MacBook with the WSL RTX 5090, using Qwen3-ASR for accurate multilingual text, forced alignment, optional speaker labels, and resumable outputs. Use for one-file tests or complete Voice Memos archive runs; do not use for live dictation.
 ---
 
 # Voice Memo WSL Transcriber
@@ -13,10 +13,10 @@ Use the remote MacBook as the source and final storage location, and WSL only as
 - WSL is reachable from that MacBook as `ssh wsl`.
 - Voice Memos media: `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`
 - Voice Memos database: `.../Recordings/CloudRecordings.db`
-- Canonical worker: `~/repo/voiceinput/scripts/voice_memo_batch.py`
-- WSL Python environment: `~/miniconda3/envs/medllm`
-- faster-whisper model: `~/models/faster-whisper-large-v3`
-- Qwen polish model: `~/.cache/huggingface/hub/models--Qwen--Qwen2.5-32B-Instruct-AWQ`
+- Canonical high-quality worker: `~/repo/voiceinput/scripts/voice_memo_qwen3_batch.py`
+- Legacy worker: `~/repo/voiceinput/scripts/voice_memo_batch.py`
+- WSL Qwen3 overlay environment: `~/.venvs/voice-memo-qwen3-asr`
+- Qwen3 models: `Qwen/Qwen3-ASR-1.7B` and `Qwen/Qwen3-ForcedAligner-0.6B`
 
 Never recursively search `~/Library`; access only the explicit Voice Memos container. Never inspect Chrome or Google browser data.
 
@@ -27,19 +27,20 @@ Never recursively search `~/Library`; access only the explicit Voice Memos conta
 3. Stage source media to a dated WSL job directory with `rsync`. Do not modify the Voice Memos container.
 4. Check `/usr/lib/wsl/lib/nvidia-smi`. If another large-model process is using the GPU, wait and check once per minute.
 5. Run long-lived WSL commands in named `tmux` sessions so they continue if the initiating Mac disconnects. Use the environment's absolute Python path inside `tmux`; its non-login shell may not resolve `python` from Conda.
-6. Run the worker's `transcribe` command first. It loads faster-whisper large-v3 and pyannote once, writes one `.raw.txt` and one `.json` per source, and safely skips completed files on retry.
-7. Copy raw outputs back to the remote MacBook before polishing.
-8. Release the ASR process. Start the cached Qwen2.5-32B-AWQ model with `scripts/start_voice_memo_vllm.sh` in its own `tmux` session, then run the worker's `polish` command in a second session. Keep raw outputs permanently; polished files are an additional view, never a replacement.
-9. Copy polished files and logs back to the remote MacBook. Verify counts, nonempty outputs, valid JSON, and exact preservation of timestamp/speaker prefixes before deleting the WSL staging directory.
+6. Run `voice_memo_qwen3_batch.py`. It converts input to 16kHz mono WAV, uses VAD to form windows shorter than the aligner's five-minute limit, transcribes with Qwen3-ASR, and obtains word/character timestamps from Qwen3-ForcedAligner.
+7. Produce three resumable outputs per recording: `clean/` for the primary readable transcript without speaker labels, `speakers/` for an experimental diarized view, and `metadata/` for timestamps, chunks, and diarization data.
+8. Treat the clean transcript as authoritative. Speaker labels are anonymous clustering results and must not influence clean sentence boundaries; do not present them as real identities without an enrolled voice sample.
+9. Copy outputs and logs back to the remote MacBook. Verify counts, nonempty outputs, valid JSON, and monotonic timestamps before deleting the WSL staging directory.
 
 If a database row has `ZLOCALDURATION=0`, or the media file is tiny and fails decoding with a missing `moov` atom, treat it as an iCloud placeholder rather than an ASR failure. Record it in the final report and ask the user to open or play it in Voice Memos so macOS downloads the audio; a later resumable run should process only those missing files.
 
 ## Output requirements
 
 - Preserve original source filenames in output names.
-- Include the Voice Memos title, source filename, duration, detected language, timestamps, and speaker labels.
-- Keep JSON segment metadata alongside text.
-- If polish changes timestamp/speaker structure or changes length excessively, reject that chunk and retain the raw text.
+- Include the Voice Memos title, source filename, duration, model, and timestamps.
+- Keep the clean and speaker-labeled views separate. Do not contaminate the primary text with uncertain diarization.
+- Keep JSON token, sentence, chunk-language, and diarization metadata alongside text.
+- Do not use text-only LLM rewriting as the primary correction mechanism: testing showed it can replace ASR errors with plausible but false words. Prefer improving the acoustic model.
 - Use a dated folder under `~/Documents/Voice Memo Transcripts/` on the remote MacBook.
 
 ## Operations
