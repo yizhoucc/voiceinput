@@ -263,7 +263,10 @@ def main() -> None:
     input_dir = Path(args.input_dir)
     output_dir = Path(args.output_dir)
     manifest = load_manifest(args.manifest)
-    files = sorted(path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS)
+    files = sorted(
+        (path for path in input_dir.iterdir() if path.is_file() and path.suffix.lower() in AUDIO_EXTENSIONS),
+        reverse=True,
+    )
     print(f"[setup] files={len(files)} model={args.model}", flush=True)
 
     model = Qwen3ASRModel.from_pretrained(
