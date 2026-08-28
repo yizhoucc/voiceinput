@@ -26,10 +26,13 @@ Never recursively search `~/Library`; access only the explicit Voice Memos conta
 2. Before a new archive run, select one short recording and validate the complete pipeline. Keep the raw and polished versions for comparison.
 3. Stage source media to a dated WSL job directory with `rsync`. Do not modify the Voice Memos container.
 4. Check `/usr/lib/wsl/lib/nvidia-smi`. If another large-model process is using the GPU, wait and check once per minute.
-5. Run the worker's `transcribe` command first. It loads faster-whisper large-v3 and pyannote once, writes one `.raw.txt` and one `.json` per source, and safely skips completed files on retry.
-6. Copy raw outputs back to the remote MacBook before polishing.
-7. Release the ASR process, start the cached Qwen2.5-32B-AWQ model with vLLM as `qwen-polish`, then run the worker's `polish` command. Keep raw outputs permanently; polished files are an additional view, never a replacement.
-8. Copy polished files and logs back to the remote MacBook. Verify counts, nonempty outputs, failed files, and representative samples before deleting the WSL staging directory.
+5. Run long-lived WSL commands in named `tmux` sessions so they continue if the initiating Mac disconnects. Use the environment's absolute Python path inside `tmux`; its non-login shell may not resolve `python` from Conda.
+6. Run the worker's `transcribe` command first. It loads faster-whisper large-v3 and pyannote once, writes one `.raw.txt` and one `.json` per source, and safely skips completed files on retry.
+7. Copy raw outputs back to the remote MacBook before polishing.
+8. Release the ASR process. Start the cached Qwen2.5-32B-AWQ model with `scripts/start_voice_memo_vllm.sh` in its own `tmux` session, then run the worker's `polish` command in a second session. Keep raw outputs permanently; polished files are an additional view, never a replacement.
+9. Copy polished files and logs back to the remote MacBook. Verify counts, nonempty outputs, valid JSON, and exact preservation of timestamp/speaker prefixes before deleting the WSL staging directory.
+
+If a database row has `ZLOCALDURATION=0`, or the media file is tiny and fails decoding with a missing `moov` atom, treat it as an iCloud placeholder rather than an ASR failure. Record it in the final report and ask the user to open or play it in Voice Memos so macOS downloads the audio; a later resumable run should process only those missing files.
 
 ## Output requirements
 
@@ -41,4 +44,4 @@ Never recursively search `~/Library`; access only the explicit Voice Memos conta
 
 ## Operations
 
-This is a long remote workflow. Send one Bark notification at start and one at completion. During active WSL work, inspect the log and GPU once per minute. Notify immediately on an error; otherwise only send an intermediate notification when the ETA changes by more than two minutes.
+This is a long remote workflow. Send one Bark notification at start and one at completion. During active WSL work, inspect the log and GPU once per minute. Notify immediately on an error; otherwise only send an intermediate notification when the ETA changes by more than two minutes. Every ETA notification title must include the concrete remaining time, for example `Voice Memo Polish ETA 35 minutes`; never send a generic `ETA updated` title. Estimate from a sufficiently long throughput window because concurrent workers can finish several files at once and make short-window ETAs unstable.
